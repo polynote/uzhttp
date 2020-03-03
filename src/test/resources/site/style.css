@@ -1,0 +1,14 @@
+body {
+    font-family: "Helvetica Neue", "Segoe UI", Verdana, sans-serif;
+    font-size: 14pt;
+    background: white;
+    color: #444;
+    line-height: 1.5;
+}
+
+h1 {
+    border-bottom: 1px solid #666;
+    font-size: 200%;
+    padding-bottom: 7pt;
+    margin-bottom: 7pt;
+}
