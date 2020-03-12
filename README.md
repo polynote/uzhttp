@@ -44,16 +44,21 @@ Probably not! Here are just a few better options:
 ## How do I use it?
 
 To create a server, you use the `uzhttp.Server.builder` constructor. This gives you a builder, which has methods to
-specify where to listen, how to respond to requests, and how to handle errors. Once you've done that, you can:
+specify where to listen, how to respond to requests, and how to handle errors. Once you've done that, you call `serve`
+which gives you a `ZManaged[R with Blocking, Throwable, Server]`. You can either `useForever` this (if you don't need
+to do anything else with the server), or you can `use` it as long as you end with `awaitShutdown`:
 
-* Call `serve` which gives you a `ZManaged[R with Blocking, Throwable, Nothing]` that never returns. You probably want
-  to `useForever` this.
-* Call `build` which gives you a `ZManaged[Blocking, Throwable, Server[R]]`. This way you can have a reference to the
-  server in case you want to shut it down. You must call `serve()` on the server in order to start serving requests.
+```scala
+serverM.use {
+  server => log("It's alive!") *> server.awaitShutdown
+}
+```
 
-The `Blocking` required for these operations is solely for binding the server to the configured address and port. That's
-the only thing that happens on the blocking thread pool (other than some forms of response which do blocking reads from
-the filesystem when it's more optimal to do so).
+The `Blocking` required for these operations is used for:
+- Binding to the given port
+- Selecting from NIO
+- Some file operations (for generating responses with the `Response` API) which are more efficient when using blocking
+  (You can avoid these if you wish, and generate your own responses).
 
 Here's an example:
 
