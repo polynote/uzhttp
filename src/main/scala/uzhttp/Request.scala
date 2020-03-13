@@ -1,7 +1,8 @@
 package uzhttp
 
 import uzhttp.header.Headers
-import websocket.Frame
+import uzhttp.websocket.Frame
+import uzhttp.HTTPError.BadRequest
 import zio.stream.{Stream, StreamChunk, Take, ZStream}
 import zio.{Chunk, Queue, Ref, UIO, ZIO}
 
@@ -9,7 +10,7 @@ import zio.{Chunk, Queue, Ref, UIO, ZIO}
 trait Request {
   def method: Request.Method
   def uri: String
-  def version: Request.Version
+  def version: Version
   def headers: Map[String, String]
   def body: Option[StreamChunk[HTTPError, Byte]]
 
@@ -26,37 +27,9 @@ trait ContinuingRequest extends Request {
 
 object Request {
 
-  sealed abstract class Version(val string: String)
-  case object Http09 extends Version("0.9")
-  case object Http10 extends Version("1.0")
-  case object Http11 extends Version("1.1")
-  object Version {
-    def parse(str: String): Version = str.slice(5, 8) match {
-      case "0.9" => Http09
-      case "1.0" => Http10
-      case "1.1" => Http11
-      case _ =>
-        throw BadRequest("Invalid HTTP version identifier")
-    }
-
-    def parseEither(str: String): Either[BadRequest, Version] = str.slice(5, 8) match {
-      case "0.9" => Right(Http09)
-      case "1.0" => Right(Http10)
-      case "1.1" => Right(Http11)
-      case _     => Left(BadRequest("Invalid HTTP version identifier"))
-    }
-  }
 
   sealed abstract class Method(val name: String)
-  case object GET extends Method("GET")
-  case object HEAD extends Method("HEAD")
-  case object POST extends Method("POST")
-  case object PUT extends Method("PUT")
-  case object DELETE extends Method("DELETE")
-  case object TRACE extends Method("TRACE")
-  case object OPTIONS extends Method("OPTIONS")
-  case object CONNECT extends Method("CONNECT")
-  case object PATCH extends Method("PATCH")
+
 
   object Method {
     val Methods: List[Method] = List(GET, HEAD, POST, PUT, DELETE, TRACE, OPTIONS, CONNECT, PATCH)
@@ -69,6 +42,16 @@ object Request {
       val strU = str.toUpperCase
       Methods.find(_.name == strU).map(Right(_)).getOrElse(Left(BadRequest("Invalid method")))
     }
+
+    case object GET extends Method("GET")
+    case object HEAD extends Method("HEAD")
+    case object POST extends Method("POST")
+    case object PUT extends Method("PUT")
+    case object DELETE extends Method("DELETE")
+    case object TRACE extends Method("TRACE")
+    case object OPTIONS extends Method("OPTIONS")
+    case object CONNECT extends Method("CONNECT")
+    case object PATCH extends Method("PATCH")
   }
 
   private[uzhttp] final case class ReceivingBody(method: Method, uri: String, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
@@ -112,7 +95,9 @@ object Request {
     }
   }
 
-  def empty(method: Method = GET, version: Version = Http11, uri: String = "/"): Request = NoBody(method, uri, version, Headers("Connection" -> "close"))
+  // Produce an empty GET request on "/" with "Connection: close". Mainly for testing.
+  def empty(method: Method = Method.GET, version: Version = Version.Http11, uri: String = "/"): Request =
+    NoBody(method, uri, version, Headers("Connection" -> "close"))
 
   final class WebsocketRequest(
     val method: Method,

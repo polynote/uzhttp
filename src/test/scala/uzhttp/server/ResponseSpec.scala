@@ -18,7 +18,7 @@ import org.scalatest.matchers.must.Matchers
 import zio.{Chunk, Ref, Task, ZIO, stream}
 import ZIO.effect
 import org.scalatest.Assertion
-import uzhttp.{Request, Response}
+import uzhttp.{Request, Response, Version}
 import uzhttp.header.Headers
 import zio.blocking.Blocking
 
@@ -67,7 +67,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
     val modified = Files.getLastModifiedTime(path).toInstant
     val expected = Files.readAllBytes(path)
 
-    val req = Request.NoBody(Request.GET, "/path-test.txt", Request.Http11, Headers.empty)
+    val req = Request.NoBody(Request.Method.GET, "/path-test.txt", Version.Http11, Headers.empty)
 
     "writes to connection" in {
       verify(unsafeRun(Response.fromPath(path, req, contentType = "text/plain", headers = List("Flerg" -> "Blerg")))) {
@@ -107,7 +107,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
     val path = Paths.get(getClass.getClassLoader.getResource(resource).toURI)
     val modified = Files.getLastModifiedTime(path).toInstant
     val expected = Files.readAllBytes(path)
-    val req = Request.NoBody(Request.GET, "/path-test.txt", Request.Http11, Headers.empty)
+    val req = Request.NoBody(Request.Method.GET, "/path-test.txt", Version.Http11, Headers.empty)
 
     "when resource is un-jarred" - {
       "writes to connection" in {
