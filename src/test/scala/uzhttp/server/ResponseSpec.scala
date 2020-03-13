@@ -153,6 +153,8 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
         stream.close()
       }
 
+      jarFile.toFile.deleteOnExit()
+
       val jarModified = Files.getLastModifiedTime(jarFile).toInstant
       val cl = new URLClassLoader(Array(jarFile.toUri.toURL), null)
 
