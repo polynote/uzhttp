@@ -521,7 +521,7 @@ object Server {
   }
 
   private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] = {
-    case req => ZIO.fail(NotFound(req.uri))
+    case req => ZIO.fail(NotFound(req.uri.toString))
   }
 
   private val defaultErrorFormatter: HTTPError => ZIO[Any, Nothing, Response] =

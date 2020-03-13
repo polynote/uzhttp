@@ -1,5 +1,7 @@
 package uzhttp
 
+import java.net.URI
+
 import uzhttp.header.Headers
 import uzhttp.websocket.Frame
 import uzhttp.HTTPError.BadRequest
@@ -9,7 +11,7 @@ import zio.{Chunk, Queue, Ref, UIO, ZIO}
 
 trait Request {
   def method: Request.Method
-  def uri: String
+  def uri: URI
   def version: Version
   def headers: Map[String, String]
   def body: Option[StreamChunk[HTTPError, Byte]]
@@ -54,7 +56,7 @@ object Request {
     case object PATCH extends Method("PATCH")
   }
 
-  private[uzhttp] final case class ReceivingBody(method: Method, uri: String, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
+  private[uzhttp] final case class ReceivingBody(method: Method, uri: URI, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
     override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueueWithShutdown(bodyQueue).unTake))
 
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
@@ -66,18 +68,18 @@ object Request {
   }
 
   private[uzhttp] object ReceivingBody {
-    private[uzhttp] def create(method: Method, uri: String, version: Version, headers: Headers, contentLength: Long): UIO[ReceivingBody] =
+    private[uzhttp] def create(method: Method, uri: URI, version: Version, headers: Headers, contentLength: Long): UIO[ReceivingBody] =
       ZIO.mapN(Queue.unbounded[Take[HTTPError, Chunk[Byte]]], Ref.make[Long](0L)) {
         (body, received) => new ReceivingBody(method, uri, version, headers, body, received, contentLength)
       }
   }
 
-  private final case class ConstBody(method: Method, uri: String, version: Version, headers: Headers, bodyChunk: Chunk[Byte]) extends Request {
+  private final case class ConstBody(method: Method, uri: URI, version: Version, headers: Headers, bodyChunk: Chunk[Byte]) extends Request {
     override def body: Option[StreamChunk[Nothing, Byte]] = Some(StreamChunk(Stream(bodyChunk)))
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
   }
 
-  private[uzhttp] final case class NoBody(method: Method, uri: String, version: Version, headers: Headers) extends Request {
+  private[uzhttp] final case class NoBody(method: Method, uri: URI, version: Version, headers: Headers) extends Request {
     override val body: Option[StreamChunk[Nothing, Byte]] = None
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
   }
@@ -88,6 +90,7 @@ object Request {
       case first :: rest =>
         first.split(' ').toList match {
           case List(methodStr, uri, versionStr) => for {
+            uri     <- try Right(new URI(uri)) catch { case _: Throwable => Left(BadRequest("Malformed request URI")) }
             method  <- Method.parseEither(methodStr)
             version <- Version.parseEither(versionStr)
           } yield NoBody(method, uri, version, Headers.fromLines(rest))
@@ -97,11 +100,11 @@ object Request {
 
   // Produce an empty GET request on "/" with "Connection: close". Mainly for testing.
   def empty(method: Method = Method.GET, version: Version = Version.Http11, uri: String = "/"): Request =
-    NoBody(method, uri, version, Headers("Connection" -> "close"))
+    NoBody(method, new URI(uri), version, Headers("Connection" -> "close"))
 
   final class WebsocketRequest(
     val method: Method,
-    val uri: String,
+    val uri: URI,
     val version: Version,
     val headers: Headers,
     chunks: Queue[Take[Nothing, Chunk[Byte]]]
@@ -114,12 +117,12 @@ object Request {
   }
 
   object WebsocketRequest {
-    def apply(method: Method, uri: String, version: Version, headers: Headers): UIO[WebsocketRequest] =
+    def apply(method: Method, uri: URI, version: Version, headers: Headers): UIO[WebsocketRequest] =
       Queue.unbounded[Take[Nothing, Chunk[Byte]]].map {
         chunks => new WebsocketRequest(method, uri, version, headers, chunks)
       }
 
-    def unapply(req: Request): Option[(Method, String, Version, Headers, Stream[Throwable, Frame])] = req match {
+    def unapply(req: Request): Option[(Method, URI, Version, Headers, Stream[Throwable, Frame])] = req match {
       case req: WebsocketRequest => Some((req.method, req.uri, req.version, req.headers, req.frames))
       case _ => None
     }

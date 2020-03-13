@@ -90,7 +90,7 @@ object Response {
     *         catch these and convert them to [[HTTPError]] failures.
     */
   def fromPath(path: Path, request: Request, contentType: String = "application/octet-stream", status: Status = Status.Ok, headers: List[(String, String)] = Nil): ZIO[Blocking, Throwable, Response] =
-    checkExists(path, request.uri) *> checkModifiedSince(path, request.headers.get("If-Modified-Since")) orElse {
+    checkExists(path, request.uri.toString) *> checkModifiedSince(path, request.headers.get("If-Modified-Since")) orElse {
       for {
         size     <- effectBlocking(path.toFile.length())
         modified <- getModifiedTime(path).map(formatInstant).option
@@ -126,10 +126,10 @@ object Response {
     status: Status = Status.Ok,
     headers: List[(String, String)] = Nil
   ): ZIO[Blocking, Throwable, Response] = effectBlocking(Option(classLoader.getResource(name)))
-    .someOrFail(NotFound(request.uri))
+    .someOrFail(NotFound(request.uri.toString))
     .flatMap {
       resource =>
-        localPath(resource.toURI).get.tap(checkExists(_, request.uri)).flatMap(path => checkModifiedSince(path, request.headers.get("If-Modified-Since"))) orElse {
+        localPath(resource.toURI).get.tap(checkExists(_, request.uri.toString)).flatMap(path => checkModifiedSince(path, request.headers.get("If-Modified-Since"))) orElse {
           resource match {
             case url if url.getProtocol == "file" =>
               for {

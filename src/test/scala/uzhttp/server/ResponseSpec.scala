@@ -1,7 +1,7 @@
 package uzhttp.server
 
 import java.io.{FileOutputStream, InputStream}
-import java.net.URLClassLoader
+import java.net.{URI, URLClassLoader}
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
@@ -67,7 +67,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
     val modified = Files.getLastModifiedTime(path).toInstant
     val expected = Files.readAllBytes(path)
 
-    val req = Request.NoBody(Request.Method.GET, "/path-test.txt", Version.Http11, Headers.empty)
+    val req = Request.NoBody(Request.Method.GET, new URI("/path-test.txt"), Version.Http11, Headers.empty)
 
     "writes to connection" in {
       verify(unsafeRun(Response.fromPath(path, req, contentType = "text/plain", headers = List("Flerg" -> "Blerg")))) {
@@ -107,7 +107,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
     val path = Paths.get(getClass.getClassLoader.getResource(resource).toURI)
     val modified = Files.getLastModifiedTime(path).toInstant
     val expected = Files.readAllBytes(path)
-    val req = Request.NoBody(Request.Method.GET, "/path-test.txt", Version.Http11, Headers.empty)
+    val req = Request.NoBody(Request.Method.GET, new URI("/path-test.txt"), Version.Http11, Headers.empty)
 
     "when resource is un-jarred" - {
       "writes to connection" in {
