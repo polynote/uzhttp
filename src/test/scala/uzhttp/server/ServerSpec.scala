@@ -41,7 +41,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
                       Chunk.fromIterable(bytes).flatten.toArray,
                       headers = req.headers.toList.map {
                         case (name, value) => s"x-echoed-$name" -> value
-                      } ++ List("x-echoed-request-uri" -> req.uri, "x-echoed-method" -> req.method.name, "Content-Type" -> "application/octet-stream")
+                      } ++ List("x-echoed-request-uri" -> req.uri.getPath, "x-echoed-method" -> req.method.name, "Content-Type" -> "application/octet-stream")
                     )
                 }
               case None =>
@@ -53,7 +53,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
                 s"${req.method.name} ${req.uri} HTTP/${req.version.string}\r\n${req.headers.toList.map { case (k,v) => s"$k: $v" }.mkString("\r\n")}",
                 headers = req.headers.toList.map {
                   case (name, value) => s"x-echoed-$name" -> value
-                } ++ List("x-echoed-request-uri" -> req.uri, "x-echoed-method" -> req.method.name)
+                } ++ List("x-echoed-request-uri" -> req.uri.getPath, "x-echoed-method" -> req.method.name)
               )
             }
           }
@@ -108,6 +108,19 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
                 rep.body must contain theSameElementsInOrderAs body
               }
             }
+          }
+        }
+      }
+    }
+
+    "Decodes URI" in {
+      unsafeRun {
+        basicRequest.get(uri"http://localhost:$port/basic%20request").send().flatMap {
+          rep => ZIO.effect {
+            rep.code.code mustEqual 200
+            val headers = rep.headers.map(h => h.name.toLowerCase -> h.value).toMap
+            headers("x-echoed-request-uri") mustEqual "/basic request"
+            headers("x-echoed-method") mustEqual "GET"
           }
         }
       }

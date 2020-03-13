@@ -388,7 +388,8 @@ object Server {
                     _             <- handleRequest(request).forkDaemon
                   } yield ()
 
-                case request => handleRequest(request).forkDaemon
+                case request =>
+                  handleRequest(request).forkDaemon
               }
 
               mkReq *> bytesReceived(remainderLength)
@@ -521,7 +522,7 @@ object Server {
   }
 
   private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] = {
-    case req => ZIO.fail(NotFound(req.uri))
+    case req => ZIO.fail(NotFound(req.uri.toString))
   }
 
   private val defaultErrorFormatter: HTTPError => ZIO[Any, Nothing, Response] =

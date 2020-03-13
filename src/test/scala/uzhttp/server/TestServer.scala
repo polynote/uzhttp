@@ -25,13 +25,13 @@ object TestServer extends zio.App {
       case err => ZIO.fail(HTTPError.InternalServerError(err.getMessage))
     })
 
-  private def uri(req: Request) = req.uri match {
+  private def uri(req: Request) = req.uri.toString match {
     case "/" | "" => "/index.html"
     case uri => uri
   }
 
   private def servePath(req: Request): ZIO[Blocking, Throwable, Response] =
-    Response.fromPath(resourcePath.resolve(uri(req)stripPrefix("/")), req, contentType = contentType(uri(req)))
+    Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)))
 
   private def serveResource(req: Request): ZIO[Blocking, Throwable, Response] =
     Response.fromResource(s"site${uri(req)}", req, contentType = contentType(uri(req)))
