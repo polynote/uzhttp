@@ -388,7 +388,8 @@ object Server {
                     _             <- handleRequest(request).forkDaemon
                   } yield ()
 
-                case request => handleRequest(request).forkDaemon
+                case request =>
+                  handleRequest(request).forkDaemon
               }
 
               mkReq *> bytesReceived(remainderLength)

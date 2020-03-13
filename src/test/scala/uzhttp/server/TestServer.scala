@@ -31,7 +31,7 @@ object TestServer extends zio.App {
   }
 
   private def servePath(req: Request): ZIO[Blocking, Throwable, Response] =
-    Response.fromPath(resourcePath.resolve(uri(req) stripPrefix "/"), req, contentType = contentType(uri(req)))
+    Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)))
 
   private def serveResource(req: Request): ZIO[Blocking, Throwable, Response] =
     Response.fromResource(s"site${uri(req)}", req, contentType = contentType(uri(req)))
