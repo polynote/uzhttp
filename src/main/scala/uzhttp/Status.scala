@@ -1,6 +1,6 @@
-package uzhttp.server
+package uzhttp
 
-import uzhttp.server.Status.Inst
+import uzhttp.Status.Inst
 
 trait Status {
   def statusCode: Int

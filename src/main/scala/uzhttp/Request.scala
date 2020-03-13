@@ -1,10 +1,9 @@
-package uzhttp.server
-
+package uzhttp
 
 import uzhttp.header.Headers
-import uzhttp.server.Websocket.Frame
+import websocket.Frame
 import zio.stream.{Stream, StreamChunk, Take, ZStream}
-import zio.{Chunk, IO, Queue, Ref, UIO, ZIO}
+import zio.{Chunk, Queue, Ref, UIO, ZIO}
 
 
 trait Request {
@@ -72,7 +71,7 @@ object Request {
     }
   }
 
-  private[server] final case class ReceivingBody(method: Method, uri: String, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
+  private[uzhttp] final case class ReceivingBody(method: Method, uri: String, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
     override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueueWithShutdown(bodyQueue).unTake))
 
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
@@ -83,8 +82,8 @@ object Request {
     }
   }
 
-  private[server] object ReceivingBody {
-    private[server] def create(method: Method, uri: String, version: Version, headers: Headers, contentLength: Long): UIO[ReceivingBody] =
+  private[uzhttp] object ReceivingBody {
+    private[uzhttp] def create(method: Method, uri: String, version: Version, headers: Headers, contentLength: Long): UIO[ReceivingBody] =
       ZIO.mapN(Queue.unbounded[Take[HTTPError, Chunk[Byte]]], Ref.make[Long](0L)) {
         (body, received) => new ReceivingBody(method, uri, version, headers, body, received, contentLength)
       }
@@ -95,12 +94,12 @@ object Request {
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
   }
 
-  private[server] final case class NoBody(method: Method, uri: String, version: Version, headers: Headers) extends Request {
+  private[uzhttp] final case class NoBody(method: Method, uri: String, version: Version, headers: Headers) extends Request {
     override val body: Option[StreamChunk[Nothing, Byte]] = None
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
   }
 
-  private[server] object NoBody {
+  private[uzhttp] object NoBody {
     def fromReqString(str: String): Either[BadRequest, NoBody] = str.linesWithSeparators.map(_.stripLineEnd).dropWhile(_.isEmpty).toList match {
       case Nil => Left(BadRequest("Empty request"))
       case first :: rest =>

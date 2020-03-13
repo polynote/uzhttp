@@ -2,9 +2,21 @@ package uzhttp
 
 import java.nio.channels.SelectionKey
 
+import zio.duration.Duration
+import zio.{Has, URIO, ZIO}
+
 package object server {
-  val CRLF: Array[Byte] = Array('\r', '\n')
-  val EmptyLine: Array[Byte] = CRLF ++ CRLF
+
+  type Logging = Has[ServerLogger[Any]]
+
+  object Logging {
+    def info(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].info(str))
+    def request(req: Request, rep: Response, startDuration: Duration, finishDuration: Duration): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].request(req, rep, startDuration, finishDuration))
+    def debug(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].debug(str))
+    def error(str: String, err: Throwable): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].error(str, err))
+  }
+
+  private[server] val EmptyLine: Array[Byte] = CRLF ++ CRLF
 
   // The most copy-pasted StackOverflow snippet of all time, adapted to unprincipled Scala!
   private[server] def humanReadableByteCountSI(bytes: Long): String = {
@@ -30,18 +42,6 @@ package object server {
           override def next(): SelectionKey = jIterator.next()
         }
       }
-    }
-  }
-
-  private[server] implicit class EitherCompat[+L, +R](val self: Either[L, R]) extends AnyVal {
-    def flatMap[L1 >: L, R1](fn: R => Either[L1, R1]): Either[L1, R1] = self match {
-      case Left(l)  => Left(l)
-      case Right(r) => fn(r)
-    }
-
-    def map[R1](fn: R => R1): Either[L, R1] = self match {
-      case Left(l) => Left(l)
-      case Right(r) => Right(fn(r))
     }
   }
 }

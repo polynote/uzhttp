@@ -3,7 +3,7 @@ package uzhttp.server
 import java.net.{InetSocketAddress, URLConnection}
 import java.nio.file.Paths
 
-import uzhttp.server.Server.ServerLogger
+import uzhttp.{HTTPError, InternalServerError, Request, Response}
 import zio.ZIO
 import zio.blocking.Blocking
 

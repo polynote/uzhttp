@@ -11,6 +11,7 @@ import sttp.client.{Response => _, _}
 import sttp.client.asynchttpclient.WebSocketHandler
 import sttp.client.asynchttpclient.zio._
 import sttp.model.ws.WebSocketFrame
+import uzhttp.{BadRequest, Request, Response, websocket}
 
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
@@ -21,7 +22,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
     val managed = Server.builder(new InetSocketAddress("127.0.0.1", 0))
       .handleAll {
         case req@Request.WebsocketRequest(_, _, _, _, frames) =>
-          Queue.unbounded[Take[Throwable, Websocket.Frame]].flatMap {
+          Queue.unbounded[Take[Throwable, websocket.Frame]].flatMap {
             output => Response.websocket(
               req,
               Stream.fromQueue(output).unTake

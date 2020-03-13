@@ -1,6 +1,6 @@
 package uzhttp.header
 
-import uzhttp.server.BadRequest
+import uzhttp.BadRequest
 
 import scala.collection.immutable.ListMap
 import scala.language.implicitConversions

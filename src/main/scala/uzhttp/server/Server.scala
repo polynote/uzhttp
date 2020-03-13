@@ -1,4 +1,5 @@
-package uzhttp.server
+package uzhttp
+package server
 
 import java.io.InputStream
 import java.net.{InetSocketAddress, SocketAddress, URI}
@@ -7,9 +8,6 @@ import java.nio.channels._
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
-import scala.collection.JavaConverters._
-
-import uzhttp.server.Server.Logging
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking, effectBlockingCancelable}
 import zio.clock.Clock
@@ -188,7 +186,7 @@ object Server {
 
   }
 
-  private[server] trait ConnectionWriter {
+  private[uzhttp] trait ConnectionWriter {
     def write(bytes: Array[Byte]): Task[Unit]
     def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit]
     def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit]
@@ -196,7 +194,7 @@ object Server {
     def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit]
   }
 
-  private[server] final class Connection private (
+  private[uzhttp] final class Connection private (
     inputBuffer: ByteBuffer,
     curReq: Ref[Either[(Int, List[String]), ContinuingRequest]],
     requestHandler: Request => IO[HTTPError, Response],
@@ -519,49 +517,6 @@ object Server {
             val connectKey = serverChannel.register(selector, SelectionKey.OP_ACCEPT)
             ZIO.effectTotal(new ChannelSelector(selector, serverChannel, connectKey, requestHandler, errorHandler, config)).toManaged(_.close())
         }
-  }
-
-  type Logging = Has[ServerLogger[Any]]
-
-  object Logging {
-    def info(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].info(str))
-    def request(req: Request, rep: Response, startDuration: Duration, finishDuration: Duration): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].request(req, rep, startDuration, finishDuration))
-    def debug(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].debug(str))
-    def error(str: String, err: Throwable): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].error(str, err))
-  }
-
-
-  case class ServerLogger[-R](
-    info: (=> String) => ZIO[R, Nothing, Unit],
-    request: (Request, Response, Duration, Duration) => ZIO[R, Nothing, Unit],
-    error: (String, Throwable) => ZIO[R, Nothing, Unit],
-    debug: (=> String) => ZIO[R, Nothing, Unit] = ServerLogger.noLog
-  ) {
-    def provide(R: R): ServerLogger[Any] = copy(
-      info = info andThen (_.provide(R)),
-      request = (req, rep, sd, fd) => request(req, rep, sd, fd).provide(R),
-      error = (msg, err) => error(msg, err).provide(R),
-      debug = debug andThen (_.provide(R))
-    )
-  }
-
-  object ServerLogger {
-    def defaultRequestLogger(req: Request, rep: Response, startDuration: Duration, finishDuration: Duration): UIO[Unit] = {
-      val closedTag = if (rep.closeAfter) "(closed)" else "(keepalive)"
-      val finishTime = finishDuration.render
-      val totalTime = (startDuration + finishDuration).render
-      effectTotal(System.err.println(s"[REQUEST] ${req.uri} ${rep.status} ($finishTime to finish, $totalTime total) $closedTag"))
-    }
-
-    val defaultInfoLogger: (=> String) => UIO[Unit] = str => effectTotal(System.err.println(s"[INFO]   $str"))
-    val defaultErrorLogger: (String, Throwable) => UIO[Unit] = (str, err) => effectTotal { System.err.println(s"[ERROR]  $str"); err.printStackTrace(System.err) }
-    val noLog: (=> String) => UIO[Unit] = _ => ZIO.unit
-    val noLogRequests: (Request, Response, Duration, Duration) => UIO[Unit] = (_, _, _, _) => ZIO.unit
-
-    lazy val Default: ServerLogger[Any] = ServerLogger(defaultInfoLogger, defaultRequestLogger, defaultErrorLogger, noLog)
-    lazy val Debug: ServerLogger[Any] = Default.copy(debug = str => effectTotal(System.err.println(s"[DEBUG]  $str")))
-    lazy val Quiet: ServerLogger[Any] = Default.copy(info = noLog, request = noLogRequests)
-    lazy val Silent: ServerLogger[Any] = Quiet.copy(error = (_, _) => ZIO.unit)
   }
 
   private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] =

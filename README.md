@@ -44,7 +44,7 @@ Probably not! Here are just a few better options:
 
 ## How do I use it?
 
-To create a server, you use the `uzhttp.Server.builder` constructor. This gives you a builder, which has methods to
+To create a server, you use the `uzhttp.server.Server.builder` constructor. This gives you a builder, which has methods to
 specify where to listen, how to respond to requests, and how to handle errors. Once you've done that, you call `serve`
 which gives you a `ZManaged[R with Blocking, Throwable, Server]`. You can either `useForever` this (if you don't need
 to do anything else with the server), or you can `use` it as long as you end with `awaitShutdown`:
@@ -65,9 +65,10 @@ Here's an example:
 
 ```scala
 import java.net.InetSocketAddress
+import uzhttp.server.Server
+import uzhttp.{Request, Response}
+import uzhttp.websocket.Frame
 import zio.{App, ZIO, Task}
-import uzhttp.server.{Server, Request, Response}, Response.{const, websocket}
-import uzhttp.server.Websocket.Frame
 
 object ExampleServer extends App {
   override def run(args:  List[String]): ZIO[zio.ZEnv, Nothing, Int] =
