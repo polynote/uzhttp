@@ -44,6 +44,8 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
   }
 
   private def timeStr(inst: Instant): String = DateTimeFormatter.RFC_1123_DATE_TIME.format(inst.atZone(ZoneOffset.UTC))
+  private def parseTime(str: String): Instant = DateTimeFormatter.RFC_1123_DATE_TIME.parse(str, toInstant)
+  private def trunc(inst: Instant): Instant = parseTime(timeStr(inst))
   private val currentTimeStr: String = timeStr(Instant.now())
 
   "Constant response" - {
@@ -73,7 +75,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           headers("Flerg") mustEqual "Blerg"
           headers("Content-Length") mustEqual expected.length.toString
           headers("Content-Type") mustEqual "text/plain"
-          DateTimeFormatter.RFC_1123_DATE_TIME.parse(headers("Modified"), toInstant) mustEqual modified
+          parseTime(headers("Modified")) mustEqual trunc(modified)
           body.toArray must contain theSameElementsInOrderAs expected
       }
     }
@@ -114,7 +116,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
             headers("Flerg") mustEqual "Blerg"
             headers("Content-Length") mustEqual expected.length.toString
             headers("Content-Type") mustEqual "text/plain"
-            DateTimeFormatter.RFC_1123_DATE_TIME.parse(headers("Modified"), toInstant) mustEqual modified
+            parseTime(headers("Modified")) mustEqual trunc(modified)
             body.toArray must contain theSameElementsInOrderAs expected
         }
       }
@@ -161,7 +163,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
             headers("Flerg") mustEqual "Blerg"
             headers("Content-Length") mustEqual expected.length.toString
             headers("Content-Type") mustEqual "text/plain"
-            DateTimeFormatter.RFC_1123_DATE_TIME.parse(headers("Modified"), toInstant) mustEqual jarModified
+            parseTime(headers("Modified")) mustEqual trunc(jarModified)
             body.toArray must contain theSameElementsInOrderAs expected
         }
       }
