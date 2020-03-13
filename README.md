@@ -1,4 +1,5 @@
 # uzhttp
+![Scala CI](https://github.com/polynote/uzhttp/workflows/Scala%20CI/badge.svg)
 
 This (Micro-Z-HTTP, or "uzi-HTTP" if you like) is a minimal HTTP server using [ZIO](https://github.com/zio/zio). It has
 essentially no features. You probably shouldn't use it.
