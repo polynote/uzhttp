@@ -85,7 +85,7 @@ object Response {
     * @param status           The status of the response. Defaults to `Ok` (HTTP 200)
     * @param headers          Any additional headers to include in the response.
     * @return A ZIO value which, when evaluated, will attempt to locate the given resource and provide an appropriate
-    *         [[Response]]. If the resource isn't present, it will fail with [[NotFound]]. Since this response interacts
+    *         [[Response]]. If the resource isn't present, it will fail with [[HTTPError.NotFound]]. Since this response interacts
     *         with the filesystem, it can fail with other arbitrary Throwable failures; you'll probably need to
     *         catch these and convert them to [[HTTPError]] failures.
     */
@@ -114,7 +114,7 @@ object Response {
     * @param status           The status of the response. Defaults to `Ok` (HTTP 200)
     * @param headers          Any additional headers to include in the response.
     * @return A ZIO value which, when evaluated, will attempt to locate the given resource and provide an appropriate
-    *         [[Response]]. If the resource isn't present, it will fail with [[NotFound]]. Since this response interacts
+    *         [[Response]]. If the resource isn't present, it will fail with [[HTTPError.NotFound]]. Since this response interacts
     *         with the filesystem, it can fail with other arbitrary Throwable failures; you'll probably need to
     *         catch these and convert them to [[HTTPError]] failures.
     */
