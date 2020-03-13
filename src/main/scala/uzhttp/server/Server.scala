@@ -8,6 +8,7 @@ import java.nio.channels._
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
+import uzhttp.HTTPError.{BadRequest, RequestTimeout, NotFound}
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking, effectBlockingCancelable}
 import zio.clock.Clock
@@ -298,9 +299,9 @@ object Server {
       }.map {
         case (dur, rep) =>
           val shouldClose = req.version match {
-            case Request.Http09 => true
-            case Request.Http10 => !req.headers.get("Connection").contains("keepalive")
-            case Request.Http11 => req.headers.get("Connection").contains("close")
+            case Version.Http09 => true
+            case Version.Http10 => !req.headers.get("Connection").contains("keepalive")
+            case Version.Http11 => req.headers.get("Connection").contains("close")
           }
           if (!rep.closeAfter && shouldClose)
             dur -> (req, rep.addHeader("Connection", "close"))
@@ -519,8 +520,9 @@ object Server {
         }
   }
 
-  private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] =
-  { case req => ZIO.fail(NotFound(req.uri)) }
+  private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] = {
+    case req => ZIO.fail(NotFound(req.uri))
+  }
 
   private val defaultErrorFormatter: HTTPError => ZIO[Any, Nothing, Response] =
     err => ZIO.succeed(Response.plain(s"${err.statusCode} ${err.statusText}\n${err.getMessage}", status = err))

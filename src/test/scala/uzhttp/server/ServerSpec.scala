@@ -11,7 +11,7 @@ import sttp.client.{Response => _, _}
 import sttp.client.asynchttpclient.WebSocketHandler
 import sttp.client.asynchttpclient.zio._
 import sttp.model.ws.WebSocketFrame
-import uzhttp.{BadRequest, Request, Response, websocket}
+import uzhttp.{HTTPError, Request, Response, websocket}
 
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
@@ -35,10 +35,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           if (req.headers.get("Content-Length").map(_.toInt).exists(_ > 0)) {
             req.body match {
               case Some(body) =>
-                body.chunks.tap {
-                  chunk =>
-                    ZIO.effectTotal(println(s"Chunk: ${chunk.length}"))
-                }.runCollect.map {
+                body.chunks.runCollect.map {
                   bytes =>
                     Response.const(
                       Chunk.fromIterable(bytes).flatten.toArray,
@@ -48,7 +45,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
                     )
                 }
               case None =>
-                ZIO.fail(BadRequest("Request has no body!"))
+                ZIO.fail(HTTPError.BadRequest("Request has no body!"))
             }
           } else {
             ZIO.succeed {

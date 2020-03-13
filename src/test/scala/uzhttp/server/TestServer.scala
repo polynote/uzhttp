@@ -3,7 +3,7 @@ package uzhttp.server
 import java.net.{InetSocketAddress, URLConnection}
 import java.nio.file.Paths
 
-import uzhttp.{HTTPError, InternalServerError, Request, Response}
+import uzhttp.{HTTPError, Request, Response}
 import zio.ZIO
 import zio.blocking.Blocking
 
@@ -22,7 +22,7 @@ object TestServer extends zio.App {
   private def handleErrors(fn: Request => ZIO[Blocking, Throwable, Response]): Request => ZIO[Blocking, HTTPError, Response] =
     fn andThen (_.catchAll {
       case err: HTTPError => ZIO.fail(err)
-      case err => ZIO.fail(InternalServerError(err.getMessage))
+      case err => ZIO.fail(HTTPError.InternalServerError(err.getMessage))
     })
 
   private def uri(req: Request) = req.uri match {
