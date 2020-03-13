@@ -5,13 +5,14 @@ import uzhttp.server.BadRequest
 import scala.collection.immutable.ListMap
 import scala.language.implicitConversions
 
-final class Headers private (private val mapWithLowerCaseKeys: Map[String, (String, String)]) extends scala.collection.immutable.Map[String, String] with Serializable {
-  override def +[B1 >: String](kv: (String, B1)): Headers = new Headers(mapWithLowerCaseKeys + (kv._1.toLowerCase -> (kv._1 -> kv._2.toString)))
+final class Headers private (private val mapWithLowerCaseKeys: Map[String, (String, String)]) extends CompatMap[String, String] with scala.collection.immutable.Map[String, String] with Serializable {
+  override def updated[V1 >: String](key: String, value: V1): Headers = new Headers(mapWithLowerCaseKeys + (key.toLowerCase -> (key -> value.toString)))
+  override def +[B1 >: String](kv: (String, B1)): Headers = updated(kv._1, kv._2)
   override def get(key: String): Option[String] = mapWithLowerCaseKeys.get(key.toLowerCase()).map(_._2)
   override def iterator: Iterator[(String, String)] = mapWithLowerCaseKeys.iterator.map {
     case (_, origKeyWithValue) => origKeyWithValue
   }
-  override def -(key: String): Map[String, String] = new Headers(mapWithLowerCaseKeys - key.toLowerCase)
+  override def removed(key: String): Map[String, String] = new Headers(mapWithLowerCaseKeys - key.toLowerCase)
 
   override def contains(key: String): Boolean = mapWithLowerCaseKeys.contains(key.toLowerCase())
 

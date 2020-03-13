@@ -7,7 +7,7 @@ import zio.stream.{Sink, Stream, Take}
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
-import sttp.client._
+import sttp.client.{Response => _, _}
 import sttp.client.asynchttpclient.WebSocketHandler
 import sttp.client.asynchttpclient.zio._
 import sttp.model.ws.WebSocketFrame

@@ -101,13 +101,13 @@ object Request {
   }
 
   private[server] object NoBody {
-    def fromReqString(str: String): Either[BadRequest, NoBody] = str.lines.dropWhile(_.isEmpty).toList match {
+    def fromReqString(str: String): Either[BadRequest, NoBody] = str.linesWithSeparators.map(_.stripLineEnd).dropWhile(_.isEmpty).toList match {
       case Nil => Left(BadRequest("Empty request"))
       case first :: rest =>
         first.split(' ').toList match {
           case List(methodStr, uri, versionStr) => for {
-            method  <- Method.parseEither(methodStr).right
-            version <- Version.parseEither(versionStr).right
+            method  <- Method.parseEither(methodStr)
+            version <- Version.parseEither(versionStr)
           } yield NoBody(method, uri, version, Headers.fromLines(rest))
         }
     }
