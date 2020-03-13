@@ -28,7 +28,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
   private def splitRequest(req: Chunk[Byte]) = {
     val arr = req.toArray
     val splitPoint = arr.indexOfSlice(Seq('\r', '\n', '\r', '\n'))
-    val headerLines = new String(arr, 0, splitPoint, StandardCharsets.US_ASCII).lines.toList
+    val headerLines = new String(arr, 0, splitPoint, StandardCharsets.US_ASCII).linesWithSeparators.map(_.stripLineEnd).toList
     (headerLines.head, Headers.fromLines(headerLines.tail), req.drop(splitPoint + 4))
   }
 

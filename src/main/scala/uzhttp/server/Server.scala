@@ -504,7 +504,7 @@ object Server {
     }
 
     def close(): URIO[Logging, Unit] =
-      ZIO.foreach(selector.keys().asScala)(k => effect(k.cancel())).orDie *> effect(selector.close()).orDie *>
+      ZIO.foreach(selector.keys().toIterable)(k => effect(k.cancel())).orDie *> effect(selector.close()).orDie *>
         effect(serverSocket.close()).orDie
 
     def run: RIO[Logging with Blocking with Clock, Nothing] = (select *> ZIO.yieldNow).forever
