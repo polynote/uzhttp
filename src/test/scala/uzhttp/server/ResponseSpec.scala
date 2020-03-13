@@ -18,6 +18,7 @@ import org.scalatest.matchers.must.Matchers
 import zio.{Chunk, Ref, Task, ZIO, stream}
 import ZIO.effect
 import org.scalatest.Assertion
+import uzhttp.{Request, Response}
 import uzhttp.header.Headers
 import zio.blocking.Blocking
 

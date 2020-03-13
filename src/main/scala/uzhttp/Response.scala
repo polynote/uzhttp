@@ -1,4 +1,4 @@
-package uzhttp.server
+package uzhttp
 
 import java.io.InputStream
 import java.net.URI
@@ -7,11 +7,13 @@ import java.nio.channels.FileChannel
 import java.nio.charset.{Charset, StandardCharsets}
 import java.nio.file.{Files, Path, Paths, StandardOpenOption}
 import java.security.MessageDigest
-import java.time.{Instant, ZoneOffset, ZonedDateTime}
 import java.time.format.DateTimeFormatter
+import java.time.{Instant, ZoneOffset, ZonedDateTime}
 import java.util.Base64
 
 import uzhttp.header.Headers
+import uzhttp.server.Server
+import uzhttp.websocket.Frame
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking}
 import zio.stream.Stream
@@ -24,20 +26,20 @@ trait Response {
   def addHeaders(headers:(String, String)*): Response
   def addHeader(name: String, value: String): Response = addHeaders((name, value))
 
-  private[server] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit]
-  private[server] def closeAfter: Boolean = headers.exists {
+  private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit]
+  private[uzhttp] def closeAfter: Boolean = headers.exists {
     case (k, v) => k.toLowerCase == "connection" && v.toLowerCase == "close"
   }
 }
 
 object Response {
-  def plain(body: String, status: Status = Ok, headers: List[(String, String)] = Nil, charset: Charset = StandardCharsets.UTF_8): ConstResponse =
+  def plain(body: String, status: Status = Ok, headers: List[(String, String)] = Nil, charset: Charset = StandardCharsets.UTF_8): Response =
     const(body.getBytes(charset), status, List(("Content-Type", s"text/plain; charset=${charset.name()}")) ++ headers)
 
-  def html(body: String, status: Status = Ok, headers: List[(String, String)] = Nil, charset: Charset = StandardCharsets.UTF_8): ConstResponse =
+  def html(body: String, status: Status = Ok, headers: List[(String, String)] = Nil, charset: Charset = StandardCharsets.UTF_8): Response =
     const(body.getBytes(charset), status, List(("Content-Type", s"text/html; charset=${charset.name()}")) ++ headers)
 
-  def const(body: Array[Byte], status: Status = Ok, headers: List[(String, String)] = Nil): ConstResponse =
+  def const(body: Array[Byte], status: Status = Ok, headers: List[(String, String)] = Nil): Response =
     ConstResponse(status, body, ("Content-Length", body.length.toString) :: headers)
 
   private def getModifiedTime(path: Path): RIO[Blocking, Instant] =
@@ -148,8 +150,7 @@ object Response {
   def fromStream(stream: Stream[Nothing, Chunk[Byte]], size: Long, contentType: String = "application/octet-stream", status: Status = Ok, ifModifiedSince: Option[String] = None, headers: List[(String, String)] = Nil): UIO[Response] =
     ZIO.succeed(ByteStreamResponse(status, stream.map(_.toArray), ("Content-Type" -> contentType) :: ("Content-Length" -> size.toString) :: headers))
 
-
-  def websocket(req: Request, output: Stream[Throwable, Websocket.Frame]): IO[BadRequest, Websocket.WebsocketResponse] = {
+  def websocket(req: Request, output: Stream[Throwable, Frame]): IO[BadRequest, WebsocketResponse] = {
     val handshakeHeaders = ZIO.effectTotal(req.headers.get("Sec-WebSocket-Key")).someOrFail(BadRequest("Missing Sec-WebSocket-Key")).map {
       acceptKey =>
         val acceptHash = Base64.getEncoder.encodeToString {
@@ -162,10 +163,10 @@ object Response {
     for {
       closed  <- Promise.make[Throwable, Unit]
       headers <- handshakeHeaders
-    } yield Websocket.WebsocketResponse(output, closed, headers)
+    } yield WebsocketResponse(output, closed, headers)
   }
 
-  private[server] def writeHeaders(response: Response, connection: Server.Connection) = {
+  private[uzhttp] def writeHeaders(response: Response, connection: Server.Connection) = {
     val statusLine = s"HTTP/1.1 ${response.status.statusCode} ${response.status.statusText}\r\n"
     val headers = response.headers.map {
       case (name, value) => s"$name: $value\r\n"
@@ -177,7 +178,7 @@ object Response {
     } yield ()
   }
 
-  private[server] def headerBytes(response: Response): Array[Byte] = {
+  private[uzhttp] def headerBytes(response: Response): Array[Byte] = {
     val statusLine = s"HTTP/1.1 ${response.status.statusCode} ${response.status.statusText}\r\n"
     val headers = response.headers.map {
       case (name, value) => s"$name: $value\r\n"
@@ -186,57 +187,74 @@ object Response {
     (statusLine + headers + "\r\n").getBytes(StandardCharsets.US_ASCII)
   }
 
-}
 
-final case class ByteStreamResponse private[server](
-  status: Status,
-  body: Stream[Nothing, Array[Byte]],
-  headers: Headers
-) extends Response {
-  override def addHeaders(headers: (String, String)*): ByteStreamResponse = copy(headers = this.headers ++ headers)
 
-  override private[server] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
-    connection.writeByteArrays(body)
-}
+  private final case class ByteStreamResponse private[uzhttp](
+    status: Status,
+    body: Stream[Nothing, Array[Byte]],
+    headers: Headers
+  ) extends Response {
+    override def addHeaders(headers: (String, String)*): ByteStreamResponse = copy(headers = this.headers ++ headers)
 
-final case class ConstResponse private[server] (
-  status: Status,
-  body: Array[Byte],
-  headers: Headers
-) extends Response {
-  override def addHeaders(headers: (String, String)*): ConstResponse = copy(headers = this.headers ++ headers)
-
-  override private[server] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
-    connection.writeByteArrays(Stream(Response.headerBytes(this), body))
-}
-
-final case class PathResponse private[server] (
-  status: Status,
-  path: Path,
-  size: Long,
-  headers: Headers
-) extends Response {
-  override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
-
-  override private[server] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] = {
-    effectBlocking(FileChannel.open(path, StandardOpenOption.READ)).toManaged(chan => effectTotal(chan.close())).use {
-      chan => connection.transferFrom(ByteBuffer.wrap(Response.headerBytes(this)), chan)
-    }
-
+    override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
+      connection.writeByteArrays(body)
   }
-}
 
-final case class InputStreamResponse private[server](
-  status: Status,
-  getInputStream: ZManaged[Blocking, Throwable, InputStream],
-  size: Long,
-  headers: Headers
-) extends Response {
-  override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
-  override private[server] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
-    getInputStream.use {
-      is => connection.pipeFrom(ByteBuffer.wrap(Response.headerBytes(this)), is, if (size < 8192) size.toInt else 8192)
+  private final case class ConstResponse private[uzhttp] (
+    status: Status,
+    body: Array[Byte],
+    headers: Headers
+  ) extends Response {
+    override def addHeaders(headers: (String, String)*): ConstResponse = copy(headers = this.headers ++ headers)
+
+    override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
+      connection.writeByteArrays(Stream(Response.headerBytes(this), body))
+  }
+
+  private final case class PathResponse private[uzhttp] (
+    status: Status,
+    path: Path,
+    size: Long,
+    headers: Headers
+  ) extends Response {
+    override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
+
+    override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] = {
+      effectBlocking(FileChannel.open(path, StandardOpenOption.READ)).toManaged(chan => effectTotal(chan.close())).use {
+        chan => connection.transferFrom(ByteBuffer.wrap(Response.headerBytes(this)), chan)
+      }
+
     }
+  }
+
+  private final case class InputStreamResponse private[uzhttp](
+    status: Status,
+    getInputStream: ZManaged[Blocking, Throwable, InputStream],
+    size: Long,
+    headers: Headers
+  ) extends Response {
+    override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
+    override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
+      getInputStream.use {
+        is => connection.pipeFrom(ByteBuffer.wrap(Response.headerBytes(this)), is, if (size < 8192) size.toInt else 8192)
+      }
+  }
+
+  final case class WebsocketResponse private[uzhttp](
+    frames: Stream[Throwable, Frame],
+    closed: Promise[Throwable, Unit],
+    headers: Headers
+  ) extends Response {
+
+    override val status: Status = SwitchingProtocols
+    override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
+    override private[uzhttp] val closeAfter = true
+
+    override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] = {
+      connection.writeByteBuffers(Stream(ByteBuffer.wrap(Response.headerBytes(this))) ++ frames.map(_.toBytes))
+    }
+  }
+
 }
 
 

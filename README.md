@@ -64,10 +64,7 @@ The `Blocking` required for these operations is used for:
 Here's an example:
 
 ```scala
-import java.net.InetSocketAddress
-import zio.{App, ZIO, Task}
-import uzhttp.server.{Server, Request, Response}, Response.{const, websocket}
-import uzhttp.server.Websocket.Frame
+
 
 object ExampleServer extends App {
   override def run(args:  List[String]): ZIO[zio.ZEnv, Nothing, Int] =

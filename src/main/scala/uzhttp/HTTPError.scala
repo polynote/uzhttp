@@ -1,4 +1,4 @@
-package uzhttp.server
+package uzhttp
 
 abstract class HTTPError(val statusCode: Int, val statusText: String, msg: String) extends Throwable(msg) with Status
 
