@@ -9,13 +9,13 @@ import java.util.concurrent.TimeUnit
 
 import scala.collection.JavaConverters._
 
-import uzhttp.server.Server.{Logging, ServerLogger}
+import uzhttp.server.Server.Logging
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking, effectBlockingCancelable}
 import zio.clock.Clock
 import zio.duration.Duration
-import zio.stream.{Sink, Stream, Take, ZStream}
-import zio.{Chunk, Fiber, Has, IO, Managed, Promise, Queue, RIO, Ref, Semaphore, Task, UIO, UManaged, URIO, ZIO, ZLayer, ZManaged}
+import zio.stream.{Sink, Stream}
+import zio.{Chunk, Has, IO, Promise, RIO, Ref, Semaphore, Task, UIO, URIO, ZIO, ZLayer, ZManaged}
 
 class Server private (
   channel: ServerSocketChannel,
@@ -100,7 +100,7 @@ object Server {
       * given to [[handleSome]].
       */
     def handleAll[R1 <: R](handler: Request => ZIO[R1, HTTPError, Response]): Builder[R1] =
-      copy(requestHandler = requestHandler orElse PartialFunction(handler))
+      copy(requestHandler = requestHandler orElse { case x => handler(x) })
 
     /**
       * Provide a partial function which will handle matched requests not already handled by a previously given
@@ -163,7 +163,7 @@ object Server {
               closed => ZIO.environment[R].flatMap {
                 env => effectTotal(new Server(
                   channel,
-                  (requestHandler orElse PartialFunction(unhandled)) andThen (_.provide(env)),
+                  (requestHandler orElse unhandled) andThen (_.provide(env)),
                   errorHandler andThen (_.provide(env)),
                   config,
                   closed))
@@ -564,8 +564,8 @@ object Server {
     lazy val Silent: ServerLogger[Any] = Quiet.copy(error = (_, _) => ZIO.unit)
   }
 
-  private val unhandled: Request => ZIO[Any, HTTPError, Nothing] =
-    req => ZIO.fail(NotFound(req.uri))
+  private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] =
+  { case req => ZIO.fail(NotFound(req.uri)) }
 
   private val defaultErrorFormatter: HTTPError => ZIO[Any, Nothing, Response] =
     err => ZIO.succeed(Response.plain(s"${err.statusCode} ${err.statusText}\n${err.getMessage}", status = err))
