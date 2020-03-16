@@ -6,9 +6,12 @@ import java.nio.file.Paths
 import uzhttp.{HTTPError, Request, Response}
 import zio.ZIO
 import zio.blocking.Blocking
+import zio.internal.{Platform, Tracing}
 
 object TestServer extends zio.App {
   private lazy val resourcePath = Paths.get(getClass.getClassLoader.getResource("site").toURI)
+
+  override val platform: Platform = Platform.default.withTracing(Tracing.disabled)
 
   private def contentType(uri: String): String =
     if (uri.endsWith(".css"))
@@ -25,13 +28,21 @@ object TestServer extends zio.App {
       case err => ZIO.fail(HTTPError.InternalServerError(err.getMessage))
     })
 
+  private val indexPage = unsafeRun {
+    Response.mmap(
+      resourcePath.resolve("index.html"),
+      "/index.html", "text/html; charset=UTF-8")
+  }
+
   private def uri(req: Request) = req.uri.toString match {
     case "/" | "" => "/index.html"
     case uri => uri
   }
 
-  private def servePath(req: Request): ZIO[Blocking, Throwable, Response] =
-    Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)))
+  private def servePath(req: Request): ZIO[Blocking, Throwable, Response] = req.uri.getPath match {
+    case "/" | "" | "/index.html" => indexPage(req)
+    case _ => Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)))
+  }
 
   private def serveResource(req: Request): ZIO[Blocking, Throwable, Response] =
     Response.fromResource(s"site${uri(req)}", req, contentType = contentType(uri(req)))
@@ -43,8 +54,10 @@ object TestServer extends zio.App {
         handleErrors(serveResource)
       else
         handleErrors(servePath)
-    ).withMaxPending(Short.MaxValue).serve.use {
-      server =>
-        server.awaitShutdown.as(0)
+    )
+    .withMaxPending(Short.MaxValue)
+    .withLogger(ServerLogger.Silent)
+    .serve.use {
+      server => server.awaitShutdown.as(0)
     }.orDie
 }

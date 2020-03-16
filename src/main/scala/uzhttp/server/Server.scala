@@ -8,13 +8,13 @@ import java.nio.channels._
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
-import uzhttp.HTTPError.{BadRequest, RequestTimeout, NotFound}
+import uzhttp.HTTPError.{BadRequest, NotFound, RequestTimeout}
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking, effectBlockingCancelable}
 import zio.clock.Clock
 import zio.duration.Duration
 import zio.stream.{Sink, Stream}
-import zio.{Chunk, Has, IO, Promise, RIO, Ref, Semaphore, Task, UIO, URIO, ZIO, ZLayer, ZManaged}
+import zio.{Chunk, Fiber, Has, IO, Promise, RIO, Ref, Semaphore, Task, UIO, URIO, ZIO, ZLayer, ZManaged}
 
 class Server private (
   channel: ServerSocketChannel,
@@ -59,9 +59,9 @@ class Server private (
 object Server {
 
   case class Config(
-    maxPending: Int,
-    responseTimeout: Duration,
-    connectionIdleTimeout: Duration = Duration(5, TimeUnit.SECONDS)
+    maxPending: Int = 0,
+    responseTimeout: Duration = Duration.Infinity,
+    connectionIdleTimeout: Duration = Duration.Infinity
   )
 
   /**
@@ -71,7 +71,7 @@ object Server {
 
   final case class Builder[-R] private[Server] (
     address: InetSocketAddress,
-    config: Config = Config(maxPending = 0, responseTimeout = Duration.Infinity),
+    config: Config = Config(),
     requestHandler: PartialFunction[Request, ZIO[R, HTTPError, Response]] = PartialFunction.empty,
     errorHandler: HTTPError => ZIO[R, Nothing, Response] = defaultErrorFormatter,
     logger: ServerLogger[R] = ServerLogger.Default
@@ -93,6 +93,12 @@ object Server {
       * Set the timeout before which the request handler must begin a response. The default is no timeout.
       */
     def withResponseTimeout(responseTimeout: Duration): Builder[R] = copy(config = config.copy(responseTimeout = responseTimeout))
+
+    /**
+      * Set the timeout for closing idle connections (if the server receives no request within the given timeout). The
+      * default is no timeout, relying on clients to behave well and close their own idle connections.
+      */
+    def withConnectionIdleTimeout(idleTimeout: Duration): Builder[R] = copy(config = config.copy(connectionIdleTimeout = idleTimeout))
 
     /**
       * Provide a total function which will handle all requests not handled by a previously given partial handler
@@ -203,7 +209,8 @@ object Server {
     config: Config,
     private[Server] val channel: ReadableByteChannel with WritableByteChannel with SelectableChannel,
     locks: Connection.Locks,
-    shutdown: Promise[Throwable, Unit]
+    shutdown: Promise[Throwable, Unit],
+    dataTimeout: Ref[Promise[Unit, Unit]]
   ) extends ConnectionWriter {
 
     import config._
@@ -378,6 +385,7 @@ object Server {
                     request <- Request.WebsocketRequest(method, uri, version, headers)
                     _       <- curReq.set(Right(request))
                     _       <- handleRequest(request).forkDaemon
+                    _       <- stopIdleTimeout
                   } yield ()
 
                 case Request.NoBody(method, uri, version, headers) if headers.contains("Content-Length") && headers("Content-Length") != "0" =>
@@ -416,20 +424,41 @@ object Server {
 
       effect(channel.read(inputBuffer)).flatMap {
         case -1 => close()
-        case numBytes => bytesReceived(numBytes)
+        case numBytes => dataTimeout.get.flatMap(_.succeed(())) *> bytesReceived(numBytes)
       }.catchAll {
         err => Logging.info(s"Closing connection due to read error: ${err.getMessage}") *> close()
       }
     }
 
-    def close(): UIO[Unit] = writeLock.withPermit {
+    def close(): URIO[Logging, Unit] = writeLock.withPermit {
       shutdown.succeed(()).flatMap {
-        case true  => effect(channel.close()).orDie
+        case true  => Logging.debug(s"Closing connection") *> effect(channel.close()).orDie *> stopIdleTimeout
         case false => ZIO.unit
       }
     }
 
     val awaitShutdown: IO[Throwable, Unit] = shutdown.await
+
+    def startIdleTimeout: URIO[Logging with Clock, Fiber[Nothing, Unit]] = if(channel.isOpen) {
+      dataTimeout.get.flatMap {
+        promise => promise.await.timeoutFail(())(config.connectionIdleTimeout).flatMap {
+          _ => for {
+            nextPromise <- Promise.make[Unit, Unit]
+            _           <- dataTimeout.set(nextPromise)
+            nextIdle    <- startIdleTimeout
+            _           <- nextIdle.join
+          } yield ()
+        }.catchAll {
+          _ =>
+            requestLock.withPermit {
+              Logging.debug(s"Closing connection ${this} due to idle timeout (${config.connectionIdleTimeout.render})") *>
+                close()
+            }
+        }
+      }.forkDaemon
+    } else ZIO.unit.fork
+
+    def stopIdleTimeout: UIO[Unit] = dataTimeout.get.flatMap(_.interrupt).doUntil(_ || !channel.isOpen).unit
 
   }
 
@@ -439,14 +468,20 @@ object Server {
       def make: UIO[Locks] = ZIO.mapN(Semaphore.make(1), Semaphore.make(1), Semaphore.make(1))(Locks.apply)
     }
 
-    def apply(channel: SocketChannel, requestHandler: Request => IO[HTTPError, Response], errorHandler: HTTPError => UIO[Response], config: Config): ZManaged[Clock, Nothing, Connection] = {
+    def apply(channel: SocketChannel, requestHandler: Request => IO[HTTPError, Response], errorHandler: HTTPError => UIO[Response], config: Config): ZManaged[Logging with Clock, Nothing, Connection] = {
       for {
         curReq      <- Ref.make[Either[(Int, List[String]), ContinuingRequest]](Left(0 -> Nil))
         locks       <- Locks.make
         shutdown    <- Promise.make[Throwable, Unit]
-        connection  = new Connection(ByteBuffer.allocate(8192), curReq, requestHandler, errorHandler, config, channel, locks, shutdown)
+        dataTimeout <- Promise.make[Unit, Unit] >>= Ref.make[Promise[Unit, Unit]]
+        connection  = new Connection(ByteBuffer.allocate(8192), curReq, requestHandler, errorHandler, config, channel, locks, shutdown, dataTimeout)
       } yield connection
-    }.toManaged(_.close())
+    }.toManaged(_.close()).tapM { conn =>
+      config.connectionIdleTimeout match {
+        case Duration.Infinity => ZIO.unit
+        case _ => conn.startIdleTimeout.unit
+      }
+    }
   }
 
   private class ChannelSelector(

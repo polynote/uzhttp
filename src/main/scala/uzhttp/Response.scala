@@ -2,7 +2,7 @@ package uzhttp
 
 import java.io.InputStream
 import java.net.URI
-import java.nio.ByteBuffer
+import java.nio.{ByteBuffer, MappedByteBuffer}
 import java.nio.channels.FileChannel
 import java.nio.charset.{Charset, StandardCharsets}
 import java.nio.file.{Files, Path, Paths, StandardOpenOption}
@@ -14,6 +14,8 @@ import java.util.Base64
 import uzhttp.header.Headers
 import uzhttp.server.Server
 import uzhttp.HTTPError.{BadRequest, NotFound}
+import uzhttp.Response.checkModifiedSince
+import uzhttp.server.Server.ConnectionWriter
 import uzhttp.websocket.Frame
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking}
@@ -70,6 +72,7 @@ object Response {
 
   private def checkExists(path: Path, uri: String): ZIO[Blocking, NotFound, Unit] =
     effectBlocking(Option(path.toFile.exists()).filter(identity)).orDie.someOrFail(NotFound(uri)).unit
+
   /**
     * Read a response from a path. Uses blocking I/O, so that a file on the local filesystem can be directly
     * transferred to the connection using OS-level primitives when possible.
@@ -95,6 +98,23 @@ object Response {
         size     <- effectBlocking(path.toFile.length())
         modified <- getModifiedTime(path).map(formatInstant).option
       } yield PathResponse(status, path, size, modified.map("Modified" -> _).toList ::: repHeaders(contentType, size, headers))
+    }
+
+  /**
+    * Cache the given path by mapping it into memory as a MappedByteBuffer, and return a function that will serve it to
+    * a request.
+    */
+  def mmap(path: Path, uri: String, contentType: String = "application/octet-stream", status: Status = Status.Ok, headers: List[(String, String)] = Nil): RIO[Blocking, Request => RIO[Blocking, Response]] =
+    checkExists(path, uri) *> {
+      for {
+        size     <- effectBlocking(path.toFile.length())
+        modified <- getModifiedTime(path).map(formatInstant).option
+        channel  <- effect(FileChannel.open(path, StandardOpenOption.READ))
+        mapped   <- effect(channel.map(FileChannel.MapMode.READ_ONLY, 0, size))
+      } yield {
+        (request: Request) =>
+          checkModifiedSince(path, request.headers.get("If-Modified-Since")) orElse effectTotal(MappedPathResponse(status, size, modified.map("Modified" -> _).toList ::: repHeaders(contentType, size, headers), mapped))
+      }
     }
 
 
@@ -165,6 +185,11 @@ object Response {
   def fromStream(stream: Stream[Nothing, Chunk[Byte]], size: Long, contentType: String = "application/octet-stream", status: Status = Status.Ok, ifModifiedSince: Option[String] = None, headers: List[(String, String)] = Nil): UIO[Response] =
     ZIO.succeed(ByteStreamResponse(status, stream.map(_.toArray), repHeaders(contentType, size, headers)))
 
+  /**
+    * Start a websocket request from a stream of [[Frame]]s.
+    * @param req    The websocket request that initiated this response.
+    * @param output A stream of websocket [[Frame]]s to be sent to the client.
+    */
   def websocket(req: Request, output: Stream[Throwable, Frame]): IO[BadRequest, WebsocketResponse] = {
     val handshakeHeaders = ZIO.effectTotal(req.headers.get("Sec-WebSocket-Key")).someOrFail(BadRequest("Missing Sec-WebSocket-Key")).map {
       acceptKey =>
@@ -230,6 +255,16 @@ object Response {
       }
 
     }
+  }
+
+  private final case class MappedPathResponse private[uzhttp] (
+    status: Status, size: Long, headers: Headers,
+    mappedBuf: MappedByteBuffer
+  ) extends Response {
+    override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
+
+    override private[uzhttp] def writeTo(connection: ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
+      connection.writeByteBuffers(Stream(ByteBuffer.wrap(headerBytes(this)), mappedBuf.duplicate()))
   }
 
   private final case class InputStreamResponse private[uzhttp](
