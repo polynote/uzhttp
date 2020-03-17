@@ -1,3 +1,5 @@
+import java.net.URI
+
 package object uzhttp {
 
 

@@ -43,4 +43,10 @@ object Headers {
   implicit def fromSeq(kvs: Seq[(String, String)]): Headers = apply(kvs: _*)
 
   val empty: Headers = apply()
+
+  val CacheControl: String = "Cache-Control"
+  val ContentLength: String = "Content-Length"
+  val ContentType: String = "Content-Type"
+  val IfModifiedSince: String = "If-Modified-Since"
+  val LastModified: String = "Last-Modified"
 }

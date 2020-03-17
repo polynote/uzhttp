@@ -11,6 +11,7 @@ import zio.{Chunk, Ref, Task, ZIO, stream}
 import TestRuntime.runtime.unsafeRun
 
 case class MockConnectionWriter(writtenBytes: Ref[Chunk[Byte]] = unsafeRun(Ref.make(Chunk.empty))) extends Server.ConnectionWriter {
+  override def write(bytes: ByteBuffer): Task[Unit] = writtenBytes.update(_ ++ Chunk.fromByteBuffer(bytes))
   override def write(bytes: Array[Byte]): Task[Unit] = writtenBytes.update(_ ++ Chunk.fromArray(bytes))
   override def writeByteBuffers(buffers: stream.Stream[Throwable, ByteBuffer]): Task[Unit] = buffers.foreach {
     buf => writtenBytes.update(_ ++ Chunk.fromByteBuffer(buf))

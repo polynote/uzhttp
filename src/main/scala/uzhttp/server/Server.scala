@@ -1,7 +1,7 @@
 package uzhttp
 package server
 
-import java.io.InputStream
+import java.io.{ByteArrayOutputStream, InputStream}
 import java.net.{InetSocketAddress, SocketAddress, URI}
 import java.nio.ByteBuffer
 import java.nio.channels._
@@ -14,7 +14,7 @@ import zio.blocking.{Blocking, effectBlocking, effectBlockingCancelable}
 import zio.clock.Clock
 import zio.duration.Duration
 import zio.stream.{Sink, Stream}
-import zio.{Chunk, Fiber, Has, IO, Promise, RIO, Ref, Semaphore, Task, UIO, URIO, ZIO, ZLayer, ZManaged}
+import zio.{Chunk, Fiber, Has, IO, Promise, RIO, Ref, Schedule, Semaphore, Task, UIO, URIO, ZIO, ZLayer, ZManaged}
 
 class Server private (
   channel: ServerSocketChannel,
@@ -61,7 +61,8 @@ object Server {
   case class Config(
     maxPending: Int = 0,
     responseTimeout: Duration = Duration.Infinity,
-    connectionIdleTimeout: Duration = Duration.Infinity
+    connectionIdleTimeout: Duration = Duration.Infinity,
+    inputBufferSize: Int = 8192
   )
 
   /**
@@ -194,11 +195,83 @@ object Server {
   }
 
   private[uzhttp] trait ConnectionWriter {
-    def write(bytes: Array[Byte]): Task[Unit]
+    def write(bytes: ByteBuffer): Task[Unit]
+    def write(bytes: Array[Byte]): Task[Unit] = write(ByteBuffer.wrap(bytes))
     def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit]
     def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit]
     def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit]
     def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit]
+    def tap: UIO[ConnectionWriter.Tapped] = Semaphore.make(1L).map(s => new ConnectionWriter.Tapped(this, s))
+  }
+
+  private[uzhttp] object ConnectionWriter {
+    final class Tapped(underlying: ConnectionWriter, writeLock: Semaphore) extends ConnectionWriter {
+      private val output = new ByteArrayOutputStream()
+      private val outputChannel = Channels.newChannel(output)
+
+      private def par2[R, A](stream: Stream[Throwable, A])(first: Stream[Throwable, A] => RIO[R, Unit], second: Stream[Throwable, A] => RIO[R, Unit]) =
+        stream.broadcast(2, 16).use {
+          case a :: b :: Nil => first(a) &> second(b)
+          case _ => ZIO.fail(new IllegalStateException("Wrong broadcast count"))
+        }
+
+      override def write(bytes: ByteBuffer): Task[Unit] = writeLock.withPermit(underlying.write(bytes.duplicate()) &> effect(outputChannel.write(bytes)).as(bytes).doWhile(_.hasRemaining).unit)
+
+      override def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = writeLock.withPermit {
+        par2(buffers)(
+          bufs => underlying.writeByteBuffers(bufs.map(_.duplicate())),
+          bufs => bufs.foreach(buf => effect(outputChannel.write(buf)))
+        )
+      }
+
+      override def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit] = writeLock.withPermit {
+        par2(arrays)(
+          underlying.writeByteArrays,
+          arrs => arrs.foreach(arr => effect(outputChannel.write(ByteBuffer.wrap(arr)))))
+      }
+
+      override def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
+        underlying.transferFrom(header.duplicate(), src).zipParRight {
+          effect(outputChannel.write(header)) *> effectBlocking(src.size()).flatMap {
+            size => effectBlocking {
+              var pos = 0L
+              while (pos < size)
+                pos += src.transferTo(pos, size - pos, outputChannel)
+
+            }
+          }.unit
+        }
+      }
+
+      override def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
+        val outBuf = ByteBuffer.allocate(bufSize)
+        effect(outputChannel.write(header.duplicate())) *> underlying.pipeFrom(
+          header,
+          new InputStream {
+            override def read(): Int = {
+              val i = is.read()
+              if (i > 0) {
+                outBuf.put((i & 0xFF).toByte)
+                if (!outBuf.hasRemaining) {
+                  outBuf.flip()
+                  outputChannel.write(outBuf)
+                  outBuf.rewind()
+                }
+              }
+              i
+            }
+          },
+          bufSize).flatMap {
+          _ => if (outBuf.hasRemaining) effectBlocking {
+            outBuf.flip()
+            while(outBuf.hasRemaining)
+              outputChannel.write(outBuf)
+          } else ZIO.unit
+        }
+      }
+
+      def finish: UIO[ByteBuffer] = effectTotal(outputChannel.close()).as(ByteBuffer.wrap(output.toByteArray))
+    }
   }
 
   private[uzhttp] final class Connection private (
@@ -210,7 +283,8 @@ object Server {
     private[Server] val channel: ReadableByteChannel with WritableByteChannel with SelectableChannel,
     locks: Connection.Locks,
     shutdown: Promise[Throwable, Unit],
-    dataTimeout: Ref[Promise[Unit, Unit]]
+    //dataTimeout: Ref[Promise[Unit, Unit]]
+    idleTimeoutFiber: Ref[Fiber[Nothing, Unit]]
   ) extends ConnectionWriter {
 
     import config._
@@ -219,37 +293,27 @@ object Server {
     // assumes writeLock has been obtained
     private def writeInternal(buf: ByteBuffer): Task[Unit] = effect(channel.write(buf)).as(buf).doWhile(_.hasRemaining).unit
 
-    def write(bytes: Array[Byte]): Task[Unit] = writeLock.withPermit {
-      writeInternal(ByteBuffer.wrap(bytes))
-    }
+    override def write(bytes: ByteBuffer): Task[Unit] = writeLock.withPermit(writeInternal(bytes))
 
-    def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = writeLock.withPermit {
+    override def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = writeLock.withPermit {
       buffers.foreach(writeInternal)
     }
 
-    def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit] =
+    override def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit] =
       writeByteBuffers(arrays.map(ByteBuffer.wrap))
 
-    def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
-      ZIO.environment[Blocking].flatMap {
-        blocking =>
-          effectBlocking(src.size()).flatMap {
-            size =>
-              writeInternal(header) *> Stream.unfoldM(0L) {
-                transferred =>
-                  effectBlocking {
-                    if (transferred < size) {
-                      Some((), transferred + src.transferTo(transferred, size - transferred, channel))
-                    } else {
-                      None
-                    }
-                  }.provide(blocking)
-              }.run(Sink.drain)
+    override def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
+      effectBlocking(src.size()).flatMap {
+        size =>
+          writeInternal(header) *> effectBlocking {
+            var pos = 0L
+            while (pos < size)
+              pos += src.transferTo(pos, size - pos, channel)
           }
       }
     }
 
-    def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit] = if (bufSize <= 0) ZIO.unit else writeLock.withPermit {
+    override def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit] = if (bufSize <= 0) ZIO.unit else writeLock.withPermit {
       effectBlocking {
         val buf = new Array[Byte](bufSize)
         val byteBuf = ByteBuffer.wrap(buf)
@@ -329,7 +393,8 @@ object Server {
     }
 
     val doRead: RIO[Logging with Blocking with Clock, Unit] = readLock.withPermit {
-      def bytesReceived(numBytes: Int): ZIO[Logging with Blocking with Clock, HTTPError, Unit] = if (numBytes > 0) {
+      def bytesReceived: ZIO[Logging with Blocking with Clock, HTTPError, Unit] = if (inputBuffer.position() > 0) {
+        val numBytes = inputBuffer.position()
         curReq.get.flatMap {
           case Right(req) =>
             req.bytesRemaining.flatMap {
@@ -337,11 +402,15 @@ object Server {
                 val remainderLength = (numBytes - bytesRemaining).toInt
                 val takeLength = numBytes - remainderLength
                 val chunk = takeAndRewind(takeLength)
-                req.submitBytes(Chunk.fromArray(chunk)) *> curReq.set(Left(0 -> Nil)) *> bytesReceived(remainderLength)
+                req.submitBytes(Chunk.fromArray(chunk)) *> curReq.set(Left(0 -> Nil)) *> bytesReceived
 
-              case _ =>
+              case _ if !inputBuffer.hasRemaining || req.noBufferInput =>
+                // take a chunk of data iff the buffer is full
                 val chunk = takeAndRewind(numBytes)
                 req.submitBytes(Chunk.fromArray(chunk))
+
+              case _ =>
+                ZIO.unit  // wait for more data
             }
 
           case Left((prevPos, headerChunks)) =>
@@ -352,7 +421,7 @@ object Server {
             val end = inputBuffer.position() - 3
             while (found < 0 && idx < end) {
               if (inputBuffer.get(idx) == '\r') {
-                takeLimit = idx
+                takeLimit = idx - 1
                 idx += 1
                 if (inputBuffer.get(idx) == '\n') {
                   idx += 1
@@ -361,23 +430,22 @@ object Server {
                     if (inputBuffer.get(idx) == '\n') {
                       found = idx
                     } else {
-                      // this is illegal state – throw bad request?
-                      idx += 1
+                      return Connection.mismatchCRLFError
                     }
                   } else {
                     idx += 1
                   }
                 } else {
-                  idx += 1
+                  return Connection.mismatchCRLFError
                 }
               } else {
                 idx += 1
+                takeLimit = -1
               }
             }
             if (found >= 0) {
               // finished the headers – decide what kind of request it is and build the request
               val chunk = takeAndRewind(found + 1)
-              val remainderLength = inputBuffer.position()
               val reqString = (new String(chunk, StandardCharsets.US_ASCII) :: headerChunks).reverse.mkString.trim()
               val mkReq = IO.fromEither(Request.NoBody.fromReqString(reqString)).flatMap {
                 case Request.NoBody(method, uri, version, headers) if headers.get("Upgrade").contains("websocket") =>
@@ -400,31 +468,28 @@ object Server {
                   handleRequest(request).forkDaemon
               }
 
-              mkReq *> bytesReceived(remainderLength)
-            } else {
-              // PERF: A low-hanging performance improvement here would be to allow the buffer to fill up while waiting
-              //       for headers. Often the size of headers will fit into the buffer, so we could avoid accumulating
-              //       chunks and rewinding the buffer.
-              if (takeLimit - 1 > 0) {
+              mkReq *> bytesReceived
+            } else if (!inputBuffer.hasRemaining) { // only take a chunk of headers when the buffer is full
+              if (takeLimit > 0) {
                 // can safely take this chunk of header data and rewind the buffer – only take up to a \r to avoid splitting across the empty line chars
-                val chunk = takeAndRewind(takeLimit - 1)
+                val chunk = takeAndRewind(takeLimit)
                 val remainderLength = inputBuffer.position()
-                curReq.set(Left(remainderLength -> (new String(chunk, StandardCharsets.US_ASCII) :: headerChunks))) *> bytesReceived(remainderLength)
+                curReq.set(Left(remainderLength -> (new String(chunk, StandardCharsets.US_ASCII) :: headerChunks))) *> bytesReceived
               } else if (takeLimit < 0) {
                 // can safely take the whole data and rewind the buffer
-                val chunk = takeAndRewind(inputBuffer.position())
+                val chunk = takeAndRewind(numBytes)
                 curReq.set(Left(0 -> (new String(chunk, StandardCharsets.US_ASCII) :: headerChunks)))
               } else {
-                // can't take anything, because the only characters are \r and \n (but not enough to end the headers). Defer until more bytes available.
-                curReq.set(Left(inputBuffer.position() -> headerChunks))
+                // This can only happen if the buffer is catastrophically small (like 2 bytes and only contains \r\n)
+                Connection.mismatchCRLFError
               }
-            }
+            } else ZIO.unit
         }
       } else ZIO.yieldNow
 
       effect(channel.read(inputBuffer)).flatMap {
         case -1 => close()
-        case numBytes => dataTimeout.get.flatMap(_.succeed(())) *> bytesReceived(numBytes)
+        case _  => resetIdleTimeout &> bytesReceived
       }.catchAll {
         err => Logging.info(s"Closing connection due to read error: ${err.getMessage}") *> close()
       }
@@ -439,33 +504,33 @@ object Server {
 
     val awaitShutdown: IO[Throwable, Unit] = shutdown.await
 
-    def startIdleTimeout: URIO[Logging with Clock, Fiber[Nothing, Unit]] = if(channel.isOpen) {
-      dataTimeout.get.flatMap {
-        promise => promise.await.timeoutFail(())(config.connectionIdleTimeout).flatMap {
-          _ => for {
-            nextPromise <- Promise.make[Unit, Unit]
-            _           <- dataTimeout.set(nextPromise)
-            nextIdle    <- startIdleTimeout
-            _           <- nextIdle.join
-          } yield ()
-        }.catchAll {
-          _ =>
-            requestLock.withPermit {
-              Logging.debug(s"Closing connection ${this} due to idle timeout (${config.connectionIdleTimeout.render})") *>
-                close()
-            }
+    val resetIdleTimeout: URIO[Logging with Clock, Unit] = config.connectionIdleTimeout match {
+      case Duration.Infinity => ZIO.unit
+      case duration =>
+        val timeoutClose = ZIO.when(channel.isOpen) {
+          ZIO.sleep(duration).flatMap {
+            _ => Logging.debug(s"Closing connection $this due to idle timeout (${config.connectionIdleTimeout.render})") *>
+              close()
+          }
         }
-      }.forkDaemon
-    } else ZIO.unit.fork
 
-    def stopIdleTimeout: UIO[Unit] = dataTimeout.get.flatMap(_.interrupt).doUntil(_ || !channel.isOpen).unit
+        locks.timeoutLock.withPermit {
+          for {
+            nextFiber <- timeoutClose.forkDaemon
+            prevFiber <- idleTimeoutFiber.getAndSet(nextFiber)
+            _         <- prevFiber.interruptFork
+          } yield ()
+      }
+    }
+
+    def stopIdleTimeout: UIO[Unit] = idleTimeoutFiber.get.flatMap(_.interrupt).unit
 
   }
 
   private object Connection {
-    case class Locks(readLock: Semaphore, writeLock: Semaphore, requestLock: Semaphore)
+    case class Locks(readLock: Semaphore, writeLock: Semaphore, requestLock: Semaphore, timeoutLock: Semaphore)
     object Locks {
-      def make: UIO[Locks] = ZIO.mapN(Semaphore.make(1), Semaphore.make(1), Semaphore.make(1))(Locks.apply)
+      def make: UIO[Locks] = ZIO.mapN(Semaphore.make(1), Semaphore.make(1), Semaphore.make(1), Semaphore.make(1))(Locks.apply)
     }
 
     def apply(channel: SocketChannel, requestHandler: Request => IO[HTTPError, Response], errorHandler: HTTPError => UIO[Response], config: Config): ZManaged[Logging with Clock, Nothing, Connection] = {
@@ -473,15 +538,17 @@ object Server {
         curReq      <- Ref.make[Either[(Int, List[String]), ContinuingRequest]](Left(0 -> Nil))
         locks       <- Locks.make
         shutdown    <- Promise.make[Throwable, Unit]
-        dataTimeout <- Promise.make[Unit, Unit] >>= Ref.make[Promise[Unit, Unit]]
-        connection  = new Connection(ByteBuffer.allocate(8192), curReq, requestHandler, errorHandler, config, channel, locks, shutdown, dataTimeout)
+        idleTimeout <- ZIO.unit.fork >>= Ref.make[Fiber[Nothing, Unit]]
+        connection  = new Connection(ByteBuffer.allocate(config.inputBufferSize), curReq, requestHandler, errorHandler, config, channel, locks, shutdown, idleTimeout)
       } yield connection
     }.toManaged(_.close()).tapM { conn =>
       config.connectionIdleTimeout match {
         case Duration.Infinity => ZIO.unit
-        case _ => conn.startIdleTimeout.unit
+        case _ => conn.resetIdleTimeout
       }
     }
+
+    private val mismatchCRLFError: IO[BadRequest, Nothing] = ZIO.fail(BadRequest("Header contains \\r without \\n"))
   }
 
   private class ChannelSelector(
@@ -556,7 +623,7 @@ object Server {
         }
   }
 
-  private val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] = {
+  private[uzhttp] val unhandled: PartialFunction[Request, ZIO[Any, HTTPError, Nothing]] = {
     case req => ZIO.fail(NotFound(req.uri.toString))
   }
 

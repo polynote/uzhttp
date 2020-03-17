@@ -2,16 +2,21 @@ package uzhttp.server
 
 import java.net.{InetSocketAddress, URLConnection}
 import java.nio.file.Paths
+import java.util.concurrent.TimeUnit
 
 import uzhttp.{HTTPError, Request, Response}
 import zio.ZIO
 import zio.blocking.Blocking
+import zio.duration.Duration
 import zio.internal.{Platform, Tracing}
 
 object TestServer extends zio.App {
   private lazy val resourcePath = Paths.get(getClass.getClassLoader.getResource("site").toURI)
 
   override val platform: Platform = Platform.default.withTracing(Tracing.disabled)
+
+  private val cacheHeaders =
+    ("Cache-Control" -> "max-age=0, must-revalidate") :: Nil
 
   private def contentType(uri: String): String =
     if (uri.endsWith(".css"))
@@ -31,7 +36,8 @@ object TestServer extends zio.App {
   private val indexPage = unsafeRun {
     Response.mmap(
       resourcePath.resolve("index.html"),
-      "/index.html", "text/html; charset=UTF-8")
+      "/index.html", "text/html; charset=UTF-8",
+      headers = cacheHeaders)
   }
 
   private def uri(req: Request) = req.uri.toString match {
@@ -41,23 +47,27 @@ object TestServer extends zio.App {
 
   private def servePath(req: Request): ZIO[Blocking, Throwable, Response] = req.uri.getPath match {
     case "/" | "" | "/index.html" => indexPage(req)
-    case _ => Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)))
+    case _ => Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)), headers = cacheHeaders)
   }
 
   private def serveResource(req: Request): ZIO[Blocking, Throwable, Response] =
-    Response.fromResource(s"site${uri(req)}", req, contentType = contentType(uri(req)))
+    Response.fromResource(s"site${uri(req)}", req, contentType = contentType(uri(req)), headers = cacheHeaders)
 
 
-  override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] = Server.builder(new InetSocketAddress("127.0.0.1", 9121))
-    .handleAll(
-      if (args contains ("--from-resources"))
-        handleErrors(serveResource)
-      else
-        handleErrors(servePath)
-    )
-    .withMaxPending(Short.MaxValue)
-    .withLogger(ServerLogger.Silent)
-    .serve.use {
+  override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] = Response.permanentCache.handleAll {
+    if (args contains ("--from-resources"))
+      handleErrors(serveResource)
+    else
+      handleErrors(servePath)
+  }.build.use {
+    cache => Server.builder(new InetSocketAddress("127.0.0.1", 9121))
+      .handleAll(cache)
+      .withMaxPending(Short.MaxValue)
+      .withLogger(ServerLogger.Silent)
+      //.withLogger(ServerLogger.Debug)
+      //.withConnectionIdleTimeout(Duration(5, TimeUnit.SECONDS))
+      .serve.use {
       server => server.awaitShutdown.as(0)
     }.orDie
+  }
 }

@@ -15,7 +15,6 @@ trait Request {
   def version: Version
   def headers: Map[String, String]
   def body: Option[StreamChunk[HTTPError, Byte]]
-
   def addHeader(name: String, value: String): Request
   def addHeaders(headers: (String, String)*): Request = headers.foldLeft(this) {
     case (r, (k, v)) => r.addHeader(k, v)
@@ -25,6 +24,7 @@ trait Request {
 trait ContinuingRequest extends Request {
   def submitBytes(chunk: Chunk[Byte]): UIO[Unit]
   def bytesRemaining: UIO[Long]
+  def noBufferInput: Boolean
 }
 
 object Request {
@@ -58,7 +58,7 @@ object Request {
 
   private[uzhttp] final case class ReceivingBody(method: Method, uri: URI, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
     override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueueWithShutdown(bodyQueue).unTake))
-
+    override val noBufferInput: Boolean = false
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
     override def bytesRemaining: UIO[Long] = received.get.map(contentLength - _)
     override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Take.Value(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
@@ -113,6 +113,7 @@ object Request {
     override val body: Option[StreamChunk[HTTPError, Byte]] = None
     override val bytesRemaining: UIO[Long] = ZIO.succeed(Long.MaxValue)
     override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Take.Value(chunk)).unit
+    override val noBufferInput: Boolean = true
     lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueueWithShutdown(chunks).unTake)
   }
 
