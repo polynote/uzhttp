@@ -7,6 +7,7 @@ import java.nio.ByteBuffer
 import java.nio.channels._
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 import uzhttp.HTTPError.{BadRequest, NotFound, RequestTimeout}
 import zio.ZIO.{effect, effectTotal}
@@ -195,82 +196,65 @@ object Server {
   }
 
   private[uzhttp] trait ConnectionWriter {
-    def write(bytes: ByteBuffer): Task[Unit]
+    def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit]
+    private def writeInternal(channel: WritableByteChannel, bytes: ByteBuffer): Task[Unit] = effect(channel.write(bytes)).as(bytes).doWhile(_.hasRemaining).unit
+    def write(bytes: ByteBuffer): Task[Unit] = withWriteLock(channel => writeInternal(channel, bytes))
     def write(bytes: Array[Byte]): Task[Unit] = write(ByteBuffer.wrap(bytes))
-    def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit]
-    def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit]
-    def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit]
-    def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit]
-    def tap: UIO[ConnectionWriter.Tapped] = Semaphore.make(1L).map(s => new ConnectionWriter.Tapped(this, s))
+    def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = withWriteLock(channel => buffers.foreach(buf => writeInternal(channel, buf)))
+    def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit] = writeByteBuffers(arrays.map(ByteBuffer.wrap))
+    def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit] = withWriteLock { channel =>
+      writeInternal(channel, header) *> effectBlocking(src.size()).flatMap {
+        size =>
+          writeInternal(channel, header) *> effectBlocking {
+            var pos = 0L
+            while (pos < size)
+              pos += src.transferTo(pos, size - pos, channel)
+          }
+      }
+    }
+
+    def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit] = withWriteLock { channel =>
+      writeInternal(channel, header) *> effectBlocking {
+        val buf = new Array[Byte](bufSize)
+        val byteBuf = ByteBuffer.wrap(buf)
+        var numRead = is.read(buf)
+        while (numRead != -1) {
+          byteBuf.limit(numRead)
+          byteBuf.position(0)
+          channel.write(byteBuf)
+          numRead = is.read(buf)
+        }
+      }
+    }
+
+    def tap: UIO[ConnectionWriter.TappedWriter] = ZIO.succeed(new ConnectionWriter.TappedWriter(this))
   }
 
   private[uzhttp] object ConnectionWriter {
-    final class Tapped(underlying: ConnectionWriter, writeLock: Semaphore) extends ConnectionWriter {
-      private val output = new ByteArrayOutputStream()
-      private val outputChannel = Channels.newChannel(output)
+    private final class TappedChannel(val underlying: AtomicReference[WritableByteChannel] = new AtomicReference(null)) extends WritableByteChannel {
+      val output: ByteArrayOutputStream = new ByteArrayOutputStream()
+      val outputChannel: WritableByteChannel = Channels.newChannel(output)
 
-      private def par2[R, A](stream: Stream[Throwable, A])(first: Stream[Throwable, A] => RIO[R, Unit], second: Stream[Throwable, A] => RIO[R, Unit]) =
-        stream.broadcast(2, 16).use {
-          case a :: b :: Nil => first(a) &> second(b)
-          case _ => ZIO.fail(new IllegalStateException("Wrong broadcast count"))
-        }
-
-      override def write(bytes: ByteBuffer): Task[Unit] = writeLock.withPermit(underlying.write(bytes.duplicate()) &> effect(outputChannel.write(bytes)).as(bytes).doWhile(_.hasRemaining).unit)
-
-      override def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = writeLock.withPermit {
-        par2(buffers)(
-          bufs => underlying.writeByteBuffers(bufs.map(_.duplicate())),
-          bufs => bufs.foreach(buf => effect(outputChannel.write(buf)))
-        )
+      override def write(src: ByteBuffer): Int = {
+        val dup = src.duplicate()
+        val written = underlying.get.write(src)
+        dup.limit(src.position())
+        outputChannel.write(dup)
+        written
       }
 
-      override def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit] = writeLock.withPermit {
-        par2(arrays)(
-          underlying.writeByteArrays,
-          arrs => arrs.foreach(arr => effect(outputChannel.write(ByteBuffer.wrap(arr)))))
+      override def isOpen: Boolean = underlying.get.isOpen
+      override def close(): Unit = underlying.get.close()
+    }
+
+    final class TappedWriter(underlying: ConnectionWriter) extends ConnectionWriter {
+      private val tappedChannel = new TappedChannel()
+      override def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit] = underlying.withWriteLock {
+        underlyingChannel =>
+          tappedChannel.underlying.set(underlyingChannel)
+          fn(tappedChannel)
       }
-
-      override def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
-        underlying.transferFrom(header.duplicate(), src).zipParRight {
-          effect(outputChannel.write(header)) *> effectBlocking(src.size()).flatMap {
-            size => effectBlocking {
-              var pos = 0L
-              while (pos < size)
-                pos += src.transferTo(pos, size - pos, outputChannel)
-
-            }
-          }.unit
-        }
-      }
-
-      override def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
-        val outBuf = ByteBuffer.allocate(bufSize)
-        effect(outputChannel.write(header.duplicate())) *> underlying.pipeFrom(
-          header,
-          new InputStream {
-            override def read(): Int = {
-              val i = is.read()
-              if (i > 0) {
-                outBuf.put((i & 0xFF).toByte)
-                if (!outBuf.hasRemaining) {
-                  outBuf.flip()
-                  outputChannel.write(outBuf)
-                  outBuf.rewind()
-                }
-              }
-              i
-            }
-          },
-          bufSize).flatMap {
-          _ => if (outBuf.hasRemaining) effectBlocking {
-            outBuf.flip()
-            while(outBuf.hasRemaining)
-              outputChannel.write(outBuf)
-          } else ZIO.unit
-        }
-      }
-
-      def finish: UIO[ByteBuffer] = effectTotal(outputChannel.close()).as(ByteBuffer.wrap(output.toByteArray))
+      def finish: UIO[ByteBuffer] = effectTotal(tappedChannel.outputChannel.close()).as(ByteBuffer.wrap(tappedChannel.output.toByteArray))
     }
   }
 
@@ -283,49 +267,13 @@ object Server {
     private[Server] val channel: ReadableByteChannel with WritableByteChannel with SelectableChannel,
     locks: Connection.Locks,
     shutdown: Promise[Throwable, Unit],
-    //dataTimeout: Ref[Promise[Unit, Unit]]
     idleTimeoutFiber: Ref[Fiber[Nothing, Unit]]
   ) extends ConnectionWriter {
 
     import config._
     import locks._
 
-    // assumes writeLock has been obtained
-    private def writeInternal(buf: ByteBuffer): Task[Unit] = effect(channel.write(buf)).as(buf).doWhile(_.hasRemaining).unit
-
-    override def write(bytes: ByteBuffer): Task[Unit] = writeLock.withPermit(writeInternal(bytes))
-
-    override def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = writeLock.withPermit {
-      buffers.foreach(writeInternal)
-    }
-
-    override def writeByteArrays(arrays: Stream[Throwable, Array[Byte]]): Task[Unit] =
-      writeByteBuffers(arrays.map(ByteBuffer.wrap))
-
-    override def transferFrom(header: ByteBuffer, src: FileChannel): ZIO[Blocking, Throwable, Unit] = writeLock.withPermit {
-      effectBlocking(src.size()).flatMap {
-        size =>
-          writeInternal(header) *> effectBlocking {
-            var pos = 0L
-            while (pos < size)
-              pos += src.transferTo(pos, size - pos, channel)
-          }
-      }
-    }
-
-    override def pipeFrom(header: ByteBuffer, is: InputStream, bufSize: Int): ZIO[Blocking, Throwable, Unit] = if (bufSize <= 0) ZIO.unit else writeLock.withPermit {
-      effectBlocking {
-        val buf = new Array[Byte](bufSize)
-        val byteBuf = ByteBuffer.wrap(buf)
-        var numRead = is.read(buf)
-        while (numRead != -1) {
-          byteBuf.limit(numRead)
-          byteBuf.position(0)
-          channel.write(byteBuf)
-          numRead = is.read(buf)
-        }
-      }
-    }
+    override def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit] = writeLock.withPermit(fn(channel))
 
     /**
       * Take n bytes from the top of the input buffer, and shift the remaining bytes (up to the buffer's position), if

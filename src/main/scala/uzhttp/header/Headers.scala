@@ -12,7 +12,7 @@ final class Headers private (private val mapWithLowerCaseKeys: Map[String, (Stri
   override def iterator: Iterator[(String, String)] = mapWithLowerCaseKeys.iterator.map {
     case (_, origKeyWithValue) => origKeyWithValue
   }
-  override def removed(key: String): Map[String, String] = new Headers(mapWithLowerCaseKeys - key.toLowerCase)
+  override def removed(key: String): Headers = new Headers(mapWithLowerCaseKeys - key.toLowerCase)
 
   override def contains(key: String): Boolean = mapWithLowerCaseKeys.contains(key.toLowerCase())
 
@@ -20,6 +20,11 @@ final class Headers private (private val mapWithLowerCaseKeys: Map[String, (Stri
 
   def ++(kvs: Seq[(String, String)]): Headers = new Headers(mapWithLowerCaseKeys ++ ListMap(kvs.map(kv => kv._1.toLowerCase -> (kv._1 -> kv._2)): _*))
   def ++(headers: Headers): Headers = new Headers(mapWithLowerCaseKeys ++ headers.mapWithLowerCaseKeys)
+
+  def +?(kv: (String, Option[String])): Headers = kv match {
+    case (key, Some(v)) => this + (key -> v)
+    case (_, None)      => this
+  }
 }
 
 object Headers {

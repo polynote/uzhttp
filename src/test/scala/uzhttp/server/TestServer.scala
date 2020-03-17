@@ -5,7 +5,7 @@ import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
 
 import uzhttp.{HTTPError, Request, Response}
-import zio.ZIO
+import zio.{RIO, ZIO}
 import zio.blocking.Blocking
 import zio.duration.Duration
 import zio.internal.{Platform, Tracing}
@@ -33,41 +33,39 @@ object TestServer extends zio.App {
       case err => ZIO.fail(HTTPError.InternalServerError(err.getMessage))
     })
 
-  private val indexPage = unsafeRun {
-    Response.mmap(
-      resourcePath.resolve("index.html"),
-      "/index.html", "text/html; charset=UTF-8",
-      headers = cacheHeaders)
-  }
 
   private def uri(req: Request) = req.uri.toString match {
     case "/" | "" => "/index.html"
     case uri => uri
   }
 
-  private def servePath(req: Request): ZIO[Blocking, Throwable, Response] = req.uri.getPath match {
-    case "/" | "" | "/index.html" => indexPage(req)
-    case _ => Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)), headers = cacheHeaders)
-  }
+  private def servePath(req: Request): ZIO[Blocking, Throwable, Response] =
+    Response.fromPath(resourcePath.resolve(uri(req).stripPrefix("/")), req, contentType = contentType(uri(req)), headers = cacheHeaders)
 
   private def serveResource(req: Request): ZIO[Blocking, Throwable, Response] =
     Response.fromResource(s"site${uri(req)}", req, contentType = contentType(uri(req)), headers = cacheHeaders)
 
-
-  override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] = Response.permanentCache.handleAll {
+  private def requestHandler(args: List[String]): Request => ZIO[Blocking, HTTPError, Response] =
     if (args contains ("--from-resources"))
       handleErrors(serveResource)
     else
       handleErrors(servePath)
-  }.build.use {
-    cache => Server.builder(new InetSocketAddress("127.0.0.1", 9121))
-      .handleAll(cache)
-      .withMaxPending(Short.MaxValue)
-      .withLogger(ServerLogger.Silent)
-      //.withLogger(ServerLogger.Debug)
-      //.withConnectionIdleTimeout(Duration(5, TimeUnit.SECONDS))
-      .serve.use {
-      server => server.awaitShutdown.as(0)
-    }.orDie
-  }
+
+  private def responseCache(args: List[String]) =
+    Response.permanentCache.handleAll(requestHandler(args)).build
+
+
+  override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] =
+    responseCache(args).use {
+      cache =>
+        Server.builder(new InetSocketAddress("127.0.0.1", 9121))
+        .handleAll(cache)
+        .withMaxPending(Short.MaxValue)
+        .withLogger(ServerLogger.Silent)
+        //.withLogger(ServerLogger.Debug)
+        //.withConnectionIdleTimeout(Duration(5, TimeUnit.SECONDS))
+        .serve.use {
+          server => server.awaitShutdown.as(0)
+        }.orDie
+    }
 }

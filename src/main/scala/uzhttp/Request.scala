@@ -19,6 +19,7 @@ trait Request {
   def addHeaders(headers: (String, String)*): Request = headers.foldLeft(this) {
     case (r, (k, v)) => r.addHeader(k, v)
   }
+  def removeHeader(name: String): Request
 }
 
 trait ContinuingRequest extends Request {
@@ -60,6 +61,7 @@ object Request {
     override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueueWithShutdown(bodyQueue).unTake))
     override val noBufferInput: Boolean = false
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
+    override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
     override def bytesRemaining: UIO[Long] = received.get.map(contentLength - _)
     override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Take.Value(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
       case received if received >= contentLength => bodyQueue.offer(Take.End).unit
@@ -77,11 +79,13 @@ object Request {
   private final case class ConstBody(method: Method, uri: URI, version: Version, headers: Headers, bodyChunk: Chunk[Byte]) extends Request {
     override def body: Option[StreamChunk[Nothing, Byte]] = Some(StreamChunk(Stream(bodyChunk)))
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
+    override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
   }
 
   private[uzhttp] final case class NoBody(method: Method, uri: URI, version: Version, headers: Headers) extends Request {
     override val body: Option[StreamChunk[Nothing, Byte]] = None
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
+    override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
   }
 
   private[uzhttp] object NoBody {
@@ -110,6 +114,7 @@ object Request {
     chunks: Queue[Take[Nothing, Chunk[Byte]]]
   ) extends ContinuingRequest {
     override def addHeader(name: String, value: String): Request = new WebsocketRequest(method, uri, version, headers + (name -> value), chunks)
+    override def removeHeader(name: String): Request = new WebsocketRequest(method, uri, version, headers = headers.removed(name), chunks)
     override val body: Option[StreamChunk[HTTPError, Byte]] = None
     override val bytesRemaining: UIO[Long] = ZIO.succeed(Long.MaxValue)
     override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Take.Value(chunk)).unit

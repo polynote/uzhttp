@@ -5,6 +5,7 @@ import java.net.URI
 import java.nio.{ByteBuffer, MappedByteBuffer}
 import java.nio.channels.FileChannel
 import java.nio.charset.{Charset, StandardCharsets}
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.{Files, Path, Paths, StandardOpenOption}
 import java.security.MessageDigest
 import java.time.format.DateTimeFormatter
@@ -14,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import uzhttp.header.Headers
 import Headers.{CacheControl, ContentLength, ContentType, IfModifiedSince, LastModified}
-import uzhttp.server.Server
+import uzhttp.server.{Logging, Server}
 import uzhttp.HTTPError.{BadRequest, NotFound}
 import uzhttp.Request.Method
 import uzhttp.server.Server.ConnectionWriter
@@ -35,6 +36,7 @@ trait Response {
 
   def addHeaders(headers:(String, String)*): Response
   def addHeader(name: String, value: String): Response = addHeaders((name, value))
+  def removeHeader(name: String): Response
 
   /**
     * Add cache-control header enabling modification time checking on the client
@@ -95,6 +97,9 @@ object Response {
     * Read a response from a path. Uses blocking I/O, so that a file on the local filesystem can be directly
     * transferred to the connection using OS-level primitives when possible.
     *
+    * Note that you mustn't use this method if the response may be cached, as (depending on the request) it may produce
+    * a `304 Not Modified` response. You don't want that being served to other clients! Use
+    *
     * @param path             A Path pointing to the file on the filesystem.
     * @param request          The request to respond to. This is used:
     *                           - To check if the `If-Modified-Since` header value included in the request for this file.
@@ -117,24 +122,6 @@ object Response {
         modified <- getModifiedTime(path).map(formatInstant).option
       } yield PathResponse(status, path, size, modified.map(LastModified -> _).toList ::: repHeaders(contentType, size, headers))
     }
-
-  /**
-    * Cache the given path by mapping it into memory as a MappedByteBuffer, and return a function that will serve it to
-    * a request.
-    */
-  def mmap(path: Path, uri: String, contentType: String = "application/octet-stream", status: Status = Status.Ok, headers: List[(String, String)] = Nil): RIO[Blocking, Request => RIO[Blocking, Response]] =
-    checkExists(path, uri) *> {
-      for {
-        size     <- effectBlocking(path.toFile.length())
-        modified <- getModifiedTime(path).map(formatInstant).option
-        channel  <- effect(FileChannel.open(path, StandardOpenOption.READ))
-        mapped   <- effect(channel.map(FileChannel.MapMode.READ_ONLY, 0, size))
-      } yield {
-        (request: Request) =>
-          checkModifiedSince(path, request.headers.get(IfModifiedSince)) orElse effectTotal(MappedPathResponse(status, size, modified.map(LastModified -> _).toList ::: repHeaders(contentType, size, headers), mapped))
-      }
-    }
-
 
   /**
     * Read a response from a resource. Uses blocking I/O, so that a file on the local filesystem can be directly
@@ -243,7 +230,7 @@ object Response {
     headers: Headers
   ) extends Response {
     override def addHeaders(headers: (String, String)*): ByteStreamResponse = copy(headers = this.headers ++ headers)
-
+    override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
       connection.writeByteArrays(body)
   }
@@ -255,25 +242,49 @@ object Response {
   ) extends Response {
     override val size: Long = body.length.toLong
     override def addHeaders(headers: (String, String)*): ConstResponse = copy(headers = this.headers ++ headers)
-
+    override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
       connection.writeByteArrays(Stream(Response.headerBytes(this), body))
   }
 
-  private final case class PathResponse private[uzhttp] (
+  final case class PathResponse private[uzhttp] (
     status: Status,
     path: Path,
     size: Long,
     headers: Headers
   ) extends Response {
     override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
-
+    override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] = {
       effectBlocking(FileChannel.open(path, StandardOpenOption.READ)).toManaged(chan => effectTotal(chan.close())).use {
         chan =>
           connection.transferFrom(ByteBuffer.wrap(Response.headerBytes(this)), chan)
       }
+    }
 
+    /**
+      * Produce a memory-mapped version of this response. NOTE: This will leak, because it can't be unmapped. Only
+      * do this if you intend to keep the memory-mapped response for the duration of your app.
+      */
+    def mmap(uri: String): RIO[Blocking, Response] = for {
+      _        <- checkExists(path, uri)
+      modified <- getModifiedTime(path).map(formatInstant).option
+      channel  <- effect(FileChannel.open(path, StandardOpenOption.READ))
+      buffer   <- effect(channel.map(FileChannel.MapMode.READ_ONLY, 0, size))
+    } yield MappedPathResponse(status, size, headers +? (LastModified, modified), buffer)
+
+    /**
+      * Like [[mmap()]], but returns a managed resource that closes the file channel after use.
+      */
+    def mmapManaged(uri: String): ZManaged[Blocking, Throwable, Response] = {
+      (checkExists(path, uri) *> getModifiedTime(path).map(formatInstant).option).toManaged_.flatMap {
+        modified =>
+          effect(FileChannel.open(path, StandardOpenOption.READ)).toManaged(c => effectTotal(c.close())).mapM {
+            channel => effect(channel.map(FileChannel.MapMode.READ_ONLY, 0, size)).map {
+              buffer => MappedPathResponse(status, size, headers +? (LastModified, modified), buffer)
+            }
+          }
+      }
     }
   }
 
@@ -282,7 +293,7 @@ object Response {
     mappedBuf: MappedByteBuffer
   ) extends Response {
     override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
-
+    override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] def writeTo(connection: ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
       connection.writeByteBuffers(Stream(ByteBuffer.wrap(headerBytes(this)), mappedBuf.duplicate()))
   }
@@ -294,6 +305,7 @@ object Response {
     headers: Headers
   ) extends Response {
     override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
+    override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
       getInputStream.use {
         is => connection.pipeFrom(ByteBuffer.wrap(Response.headerBytes(this)), is, if (size < 8192) size.toInt else 8192)
@@ -308,6 +320,7 @@ object Response {
     override val size: Long = -1L
     override val status: Status = Status.SwitchingProtocols
     override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
+    override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] val closeAfter = true
 
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] = {
@@ -316,11 +329,11 @@ object Response {
   }
 
   /**
-    * A cache that permanently caches all responses based on whether the request is eligible for response caching.
+    * A cache that memoizes responses for eligible requests, and can cache response bodies of eligible responses
     */
   class PermanentCache(
     shouldMemoize: Request => Boolean,
-    shouldCache: Response => Boolean,
+    cachedResponse: (Request, Response) => ZIO[Any, Unit, Response],
     cacheKey: Request => String,
     requestHandler: Request => IO[HTTPError, Response]
   ) extends (Request => IO[HTTPError, Response]) {
@@ -334,12 +347,16 @@ object Response {
             promise =>
               cache.putIfAbsent(key, promise)
               val p = cache.get(key)
-              requestHandler(request).tapError(p.fail).flatMap(PermanentCache.CachedResponse.make).tap(p.succeed)
+              requestHandler(request.removeHeader(IfModifiedSince)).tapError(p.fail).flatMap {
+                response => cachedResponse(request, response).orElseSucceed(response)
+              }.tap(p.succeed)
           }
-        case rep => rep.await.flatMap {
-          rep =>
-            def checkModified = ZIO.mapN(parseModDateOpt(rep.headers.get(LastModified)), parseModDateOpt(rep.headers.get(IfModifiedSince)))(_ isBefore _).filterOrFail(identity)(())
-            checkModified.as(notModified) orElse ZIO.succeed(rep)
+        case promise => promise.await.flatMap {
+          response =>
+              ZIO.mapN(parseModDateOpt(response.headers.get(LastModified)), parseModDateOpt(request.headers.get(IfModifiedSince)))(_ isBefore _)
+                .filterOrFail(_ == false)(())
+                .as(notModified)
+                .orElseSucceed(response)
           }
       }
     } else requestHandler(request)
@@ -347,10 +364,19 @@ object Response {
   }
 
   object PermanentCache {
-    case class Builder[R](
+    def defaultCachedResponse(mmapThreshold: Int = 1 << 20): (Request, Response) => ZIO[Blocking, Unit, Response] =
+      (req, rep) => rep match {
+        case rep if rep.size >= 0 && rep.size < mmapThreshold => CachedResponse.make(rep)
+        case rep: PathResponse => rep.mmap(req.uri.toString).mapError(_ => ())
+        case _ => ZIO.fail(())
+      }
+
+    def defaultShouldMemoize: Request => Boolean = req => req.method == Method.GET && !req.headers.get("Upgrade").contains("websocket")
+
+    case class Builder[R] private[uzhttp] (
+      cachedResponse: (Request, Response) => ZIO[R, Unit, Response],
       requestHandler: PartialFunction[Request, ZIO[R, HTTPError, Response]] = PartialFunction.empty,
       shouldMemoize: Request => Boolean = _.method == Method.GET,
-      shouldCache: Response => Boolean = req => (req.size >= 0 && req.size < (1 << 20)),
       cacheKey: Request => String = _.uri.toString
     ) {
       /**
@@ -365,24 +391,33 @@ object Response {
 
       /**
         * Provide a test which decides whether or not to memoize the response for a given request. The default is
-        * to memoize all GET requests and not memoize any other requests.
+        * to memoize all GET requests (other than websocket requests) and not memoize any other requests.
         */
       def memoizeIf(test: Request => Boolean): Builder[R] = copy(shouldMemoize = test)
 
       /**
-        * Provide a test which decides whether or not to cache the response body of a memoized request. The default is
-        * to cache all responses smaller than ~1MB (`2^20` bytes)
+        * Provide a function which generates a cached response given a request and response. The default behavior is:
+        * - If the response is smaller than ~1MB (`2^20` bytes) then cache it in memory
+        * - If the response is larger than 1MB and is a [[PathResponse]], permanently memory-map it rather than storing it on heap (kernel manages the cache)
+        * - Otherwise, just memoize the response (don't cache it)
         */
-      def cacheIf(test: Response => Boolean): Builder[R] = copy(shouldCache = test)
+      def cacheWith[R1 <: R](fn: (Request, Response) => ZIO[R1, Unit, Response]): Builder[R1] = copy(cachedResponse = fn)
 
       /**
         * Provide a function which extracts a String cache key from a request. The default is to use the request's
         * entire URI as the cache key.
         */
       def withCacheKey(key: Request => String): Builder[R] = copy(cacheKey = key)
+
+      /**
+        * Return the configured cache as a ZManaged value
+        */
       def build: ZManaged[R, Nothing, PermanentCache] = ZManaged.environment[R].map {
         env =>
-          new PermanentCache(shouldMemoize, shouldCache, cacheKey,
+          new PermanentCache(
+            shouldMemoize,
+            (req, rep) => cachedResponse(req, rep).provide(env),
+            cacheKey,
             (requestHandler.orElse(Server.unhandled).andThen(_.provide(env))))
       }
     }
@@ -393,6 +428,7 @@ object Response {
     ) extends Response {
       override def size: Long = underlying.size
       override def addHeaders(headers: (String, String)*): Response = new CachedResponse(underlying.addHeaders(headers: _*), contents)
+      override def removeHeader(name: String): Response = new CachedResponse(underlying.removeHeader(name), contents)
       override def status: Status = underlying.status
       override def headers: Headers = underlying.headers
       override private[uzhttp] def writeTo(connection: ConnectionWriter): RIO[Blocking, Unit] = contents.get.flatMap {
@@ -426,7 +462,7 @@ object Response {
   /**
     * Build a caching layer which can memoize and cache responses in memory for the duration of the server's lifetime.
     */
-  def permanentCache: PermanentCache.Builder[Any] = PermanentCache.Builder()
+  def permanentCache: PermanentCache.Builder[Blocking] = PermanentCache.Builder(cachedResponse = PermanentCache.defaultCachedResponse())
 
 }
 
