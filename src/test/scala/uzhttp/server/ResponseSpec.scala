@@ -19,7 +19,7 @@ import zio.{Chunk, Ref, Task, ZIO, stream}
 import ZIO.effect
 import org.scalatest.Assertion
 import uzhttp.{Request, Response, Version}
-import uzhttp.header.Headers
+import uzhttp.header.Headers, Headers.{ContentLength, ContentType, LastModified}
 import zio.blocking.Blocking
 
 class ResponseSpec extends AnyFreeSpec with Matchers {
@@ -56,7 +56,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
         (status, headers, body) =>
           status mustEqual "HTTP/1.1 200 OK"
           headers("Flerg") mustEqual "Blerg"
-          headers("Content-Length") mustEqual "256"
+          headers(ContentLength) mustEqual "256"
           body.toArray must contain theSameElementsInOrderAs bytes
       }
     }
@@ -74,9 +74,9 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
         (status, headers, body) =>
           status mustEqual "HTTP/1.1 200 OK"
           headers("Flerg") mustEqual "Blerg"
-          headers("Content-Length") mustEqual expected.length.toString
-          headers("Content-Type") mustEqual "text/plain"
-          parseTime(headers("Modified")) mustEqual trunc(modified)
+          headers(ContentLength) mustEqual expected.length.toString
+          headers(ContentType) mustEqual "text/plain"
+          parseTime(headers(LastModified)) mustEqual trunc(modified)
           body.toArray must contain theSameElementsInOrderAs expected
       }
     }
@@ -86,7 +86,8 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
         verify(unsafeRun(Response.fromPath(path, req.addHeader("If-Modified-Since", currentTimeStr)))) {
           (status, headers, body) =>
             status mustEqual "HTTP/1.1 304 Not Modified"
-            headers("Content-Length") mustEqual "0"
+            // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
+            assert(!headers.get(ContentLength).exists(_ != expected.length.toString))
             assert(body.isEmpty)
         }
       }
@@ -95,7 +96,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
         verify(unsafeRun(Response.fromPath(path, req.addHeader("If-Modified-Since", timeStr(modified.minusSeconds(5)))))) {
           (status, headers, body) =>
             status mustEqual "HTTP/1.1 200 OK"
-            headers("Content-Length") mustEqual expected.length.toString
+            headers(ContentLength) mustEqual expected.length.toString
             body.toArray must contain theSameElementsInOrderAs expected
         }
       }
@@ -115,9 +116,9 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           (status, headers, body) =>
             status mustEqual "HTTP/1.1 200 OK"
             headers("Flerg") mustEqual "Blerg"
-            headers("Content-Length") mustEqual expected.length.toString
-            headers("Content-Type") mustEqual "text/plain"
-            parseTime(headers("Modified")) mustEqual trunc(modified)
+            headers(ContentLength) mustEqual expected.length.toString
+            headers(ContentType) mustEqual "text/plain"
+            parseTime(headers(LastModified)) mustEqual trunc(modified)
             body.toArray must contain theSameElementsInOrderAs expected
         }
       }
@@ -127,7 +128,8 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", currentTimeStr)))) {
             (status, headers, body) =>
               status mustEqual "HTTP/1.1 304 Not Modified"
-              headers("Content-Length") mustEqual "0"
+              // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
+              assert(!headers.get(ContentLength).exists(_ != expected.length.toString))
               assert(body.isEmpty)
           }
         }
@@ -136,7 +138,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", timeStr(modified.minusSeconds(5)))))) {
             (status, headers, body) =>
               status mustEqual "HTTP/1.1 200 OK"
-              headers("Content-Length") mustEqual expected.length.toString
+              headers(ContentLength) mustEqual expected.length.toString
               body.toArray must contain theSameElementsInOrderAs expected
           }
         }
@@ -164,9 +166,9 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           (status, headers, body) =>
             status mustEqual "HTTP/1.1 200 OK"
             headers("Flerg") mustEqual "Blerg"
-            headers("Content-Length") mustEqual expected.length.toString
-            headers("Content-Type") mustEqual "text/plain"
-            parseTime(headers("Modified")) mustEqual trunc(jarModified)
+            headers(ContentLength) mustEqual expected.length.toString
+            headers(ContentType) mustEqual "text/plain"
+            parseTime(headers(LastModified)) mustEqual trunc(jarModified)
             body.toArray must contain theSameElementsInOrderAs expected
         }
       }
@@ -176,7 +178,8 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", timeStr(jarModified.plusSeconds(5))), classLoader = cl))) {
             (status, headers, body) =>
               status mustEqual "HTTP/1.1 304 Not Modified"
-              headers("Content-Length") mustEqual "0"
+              // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
+              assert(!headers.get(ContentLength).exists(_ != expected.length.toString))
               assert(body.isEmpty)
           }
         }
@@ -185,7 +188,7 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
           verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", timeStr(jarModified.minusSeconds(5))), classLoader = cl))) {
             (status, headers, body) =>
               status mustEqual "HTTP/1.1 200 OK"
-              headers("Content-Length") mustEqual expected.length.toString
+              headers(ContentLength) mustEqual expected.length.toString
               body.toArray must contain theSameElementsInOrderAs expected
           }
         }
