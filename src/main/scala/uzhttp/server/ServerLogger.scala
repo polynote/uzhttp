@@ -24,7 +24,7 @@ object ServerLogger {
     val closedTag = if (rep.closeAfter) "(closed)" else "(keepalive)"
     val finishTime = finishDuration.render
     val totalTime = (startDuration + finishDuration).render
-    effectTotal(System.err.println(s"[REQUEST] ${req.uri} ${rep.status} ($finishTime to finish, $totalTime total) $closedTag"))
+    effectTotal(System.err.println(s"[REQUEST] ${req.method.name} ${req.uri} ${rep.status} ($finishTime to finish, $totalTime total) $closedTag"))
   }
 
   val defaultInfoLogger: (=> String) => UIO[Unit] = str => effectTotal(System.err.println(s"[INFO]    $str"))
