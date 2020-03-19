@@ -522,7 +522,7 @@ object Server {
       }
     }
 
-    def select: RIO[Logging with Blocking with Clock, Unit] = effectBlockingCancelable(selector.select(500))(effectTotal(selector.wakeup()).unit).flatMap {
+    def select: URIO[Logging with Blocking with Clock, Unit] = effectBlockingCancelable(selector.select(500))(effectTotal(selector.wakeup()).unit).flatMap {
       case 0 =>
         ZIO.unit
       case _ => selectedKeys.flatMap {
@@ -552,10 +552,16 @@ object Server {
               }
           }
       }
+    }.catchAll {
+      err => Logging.debug(s"Error selecting channels: ${err}\n" + err.getStackTrace.mkString("\n\tat "))
+    }.onInterrupt {
+      Logging.debug("Selector interrupted")
     }
 
     def close(): URIO[Logging, Unit] =
-      ZIO.foreach(selector.keys().toIterable)(k => effect(k.cancel())).orDie *> effect(selector.close()).orDie *>
+      Logging.debug("Stopping selector") *>
+        ZIO.foreach(selector.keys().toIterable)(k => effect(k.cancel())).orDie *>
+        effect(selector.close()).orDie *>
         effect(serverSocket.close()).orDie
 
     def run: RIO[Logging with Blocking with Clock, Nothing] = (select *> ZIO.yieldNow).forever
@@ -567,6 +573,7 @@ object Server {
         .toManaged(s => effectTotal(s.close()))
         .flatMap {
           selector =>
+            serverChannel.configureBlocking(false)
             val connectKey = serverChannel.register(selector, SelectionKey.OP_ACCEPT)
             ZIO.effectTotal(new ChannelSelector(selector, serverChannel, connectKey, requestHandler, errorHandler, config)).toManaged(_.close())
         }
