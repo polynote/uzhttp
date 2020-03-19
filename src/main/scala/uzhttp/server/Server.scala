@@ -446,7 +446,14 @@ object Server {
 
     def close(): URIO[Logging, Unit] = writeLock.withPermit {
       shutdown.succeed(()).flatMap {
-        case true  => Logging.debug(s"Closing connection") *> effect(channel.close()).orDie *> stopIdleTimeout
+        case true  =>
+          Logging.debug(s"Closing connection") *>
+            effect(channel.close()).orDie *>
+            stopIdleTimeout *>
+            curReq.get.flatMap {
+              case Right(req) => req.channelClosed()
+              case _ => ZIO.unit
+            }
         case false => ZIO.unit
       }
     }
