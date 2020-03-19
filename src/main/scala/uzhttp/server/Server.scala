@@ -439,7 +439,8 @@ object Server {
         case -1 => close()
         case _  => resetIdleTimeout &> bytesReceived
       }.catchAll {
-        err => Logging.info(s"Closing connection due to read error: ${err.getMessage}") *> close()
+        case err: ClosedChannelException => Logging.debug(s"Client closed connection unexpectedly") *> close()
+        case err => Logging.error(s"Closing connection due to read error", err) *> close()
       }
     }
 

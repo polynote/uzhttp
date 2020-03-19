@@ -15,7 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import uzhttp.header.Headers
 import Headers.{CacheControl, ContentLength, ContentType, IfModifiedSince, LastModified}
-import uzhttp.server.{Logging, Server}
+import uzhttp.server.Server
 import uzhttp.HTTPError.{BadRequest, NotFound}
 import uzhttp.Request.Method
 import uzhttp.server.Server.ConnectionWriter
@@ -42,6 +42,16 @@ trait Response {
     * Add cache-control header enabling modification time checking on the client
     */
   def withCacheControl: Response = addHeader(CacheControl, "max-age=0, must-revalidate")
+
+  /**
+    * Cache the response lazily in memory, for repeated use. Be careful when using this – keep in mind that this reponse
+    * could have been tailored for a particular request and won't work for a different request (e.g. it could be a
+    * 304 Not Modified response due to the request's If-Modified-Since header)
+    *
+    * @return A new Response which caches this response's body in memory.
+    */
+  def cached: UIO[Response] = Response.CachedResponse.make(this)
+  def cachedManaged: ZManaged[Any, Nothing, Response] = Response.CachedResponse.managed(this)
 
   private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit]
   private[uzhttp] def closeAfter: Boolean = headers.exists {
@@ -183,7 +193,6 @@ object Response {
     size: Long,
     contentType: String = "application/octet-stream",
     status: Status = Status.Ok,
-    ifModifiedSince: Option[String] = None,
     headers: List[(String, String)] = Nil
   ): UIO[Response] = ZIO.succeed(InputStreamResponse(status, stream, size, repHeaders(contentType, size, headers)))
 
@@ -191,9 +200,9 @@ object Response {
     ZIO.succeed(ByteStreamResponse(status, size, stream.map(_.toArray), repHeaders(contentType, size, headers)))
 
   /**
-    * Start a websocket request from a stream of [[Frame]]s.
+    * Start a websocket request from a stream of [[uzhttp.websocket.Frame]]s.
     * @param req    The websocket request that initiated this response.
-    * @param output A stream of websocket [[Frame]]s to be sent to the client.
+    * @param output A stream of websocket [[uzhttp.websocket.Frame]]s to be sent to the client.
     */
   def websocket(req: Request, output: Stream[Throwable, Frame]): IO[BadRequest, WebsocketResponse] = {
     val handshakeHeaders = ZIO.effectTotal(req.headers.get("Sec-WebSocket-Key")).someOrFail(BadRequest("Missing Sec-WebSocket-Key")).map {
@@ -274,7 +283,7 @@ object Response {
     } yield MappedPathResponse(status, size, headers +? (LastModified, modified), buffer)
 
     /**
-      * Like [[mmap()]], but returns a managed resource that closes the file channel after use.
+      * Like [[mmap]], but returns a managed resource that closes the file channel after use.
       */
     def mmapManaged(uri: String): ZManaged[Blocking, Throwable, Response] = {
       (checkExists(path, uri) *> getModifiedTime(path).map(formatInstant).option).toManaged_.flatMap {
@@ -329,16 +338,61 @@ object Response {
   }
 
   /**
+    * A response that passes through an underlying response the first time, while caching it in memory for any future
+    * outputs.
+    */
+  private final class CachedResponse(
+    underlying: Response,
+    contents: Ref[Option[Promise[Throwable, ByteBuffer]]]
+  ) extends Response {
+    override def size: Long = underlying.size
+    override def addHeaders(headers: (String, String)*): Response = new CachedResponse(underlying.addHeaders(headers: _*), contents)
+    override def removeHeader(name: String): Response = new CachedResponse(underlying.removeHeader(name), contents)
+    override def status: Status = underlying.status
+    override def headers: Headers = underlying.headers
+    override private[uzhttp] def writeTo(connection: ConnectionWriter): RIO[Blocking, Unit] = contents.get.flatMap {
+      case Some(promise) => promise.await.flatMap(
+        buf => connection.write(buf.duplicate())
+      )
+      case None => Promise.make[Throwable, ByteBuffer].flatMap {
+        promise =>
+          contents.updateSomeAndGet {
+            case None => Some(promise)
+          }.someOrFail(new IllegalStateException("Promise should exist")).flatMap {
+            promise =>
+              connection.tap.flatMap {
+                tappedConnection =>
+                  underlying.writeTo(tappedConnection).flatMap {
+                    _ => tappedConnection.finish >>= promise.succeed
+                  }
+              }.tapError(promise.fail)
+          }
+      }.unit
+    }
+
+    def free: UIO[Unit] = contents.setAsync(None)
+  }
+
+  private object CachedResponse {
+    def make(underlying: Response): UIO[CachedResponse] = Ref.make[Option[Promise[Throwable, ByteBuffer]]](None).map {
+      promise => new CachedResponse(underlying, promise)
+    }
+
+    def managed(underlying: Response): ZManaged[Any, Nothing, CachedResponse] = make(underlying).toManaged(_.free)
+  }
+
+  /**
     * A cache that memoizes responses for eligible requests, and can cache response bodies of eligible responses
     */
   class PermanentCache(
     shouldMemoize: Request => Boolean,
     cachedResponse: (Request, Response) => ZIO[Any, Unit, Response],
     cacheKey: Request => String,
-    requestHandler: Request => IO[HTTPError, Response]
-  ) extends (Request => IO[HTTPError, Response]) {
+    requestHandler: PartialFunction[Request, IO[HTTPError, Response]]
+  ) extends PartialFunction[Request, IO[HTTPError, Response]] {
     private val cache: ConcurrentHashMap[String, Promise[HTTPError, Response]] = new ConcurrentHashMap()
 
+    override def isDefinedAt(request: Request): Boolean = requestHandler.isDefinedAt(request)
     override def apply(request: Request): IO[HTTPError, Response] = if (shouldMemoize(request)) {
       val key = cacheKey(request)
       cache.get(key) match {
@@ -371,21 +425,24 @@ object Response {
         case _ => ZIO.fail(())
       }
 
+    val alwaysCache: (Request, Response) => ZIO[Blocking, Unit, Response] =
+      (req, rep) => rep.cached
+
     def defaultShouldMemoize: Request => Boolean = req => req.method == Method.GET && !req.headers.get("Upgrade").contains("websocket")
 
     case class Builder[R] private[uzhttp] (
       cachedResponse: (Request, Response) => ZIO[R, Unit, Response],
       requestHandler: PartialFunction[Request, ZIO[R, HTTPError, Response]] = PartialFunction.empty,
-      shouldMemoize: Request => Boolean = _.method == Method.GET,
+      shouldMemoize: Request => Boolean = defaultShouldMemoize,
       cacheKey: Request => String = _.uri.toString
     ) {
       /**
-        * @see [[Server.Builder.handleSome()]]
+        * @see [[uzhttp.server.Server.Builder.handleSome]]
         */
       def handleSome[R1 <: R](handler: PartialFunction[Request, ZIO[R1, HTTPError, Response]]): Builder[R1] = copy(requestHandler = requestHandler orElse handler)
 
       /**
-        * @see [[Server.Builder.handleAll()]]
+        * @see [[uzhttp.server.Server.Builder.handleAll]]
         */
       def handleAll[R1 <: R](handler: Request => ZIO[R1, HTTPError, Response]): Builder[R1] = copy(requestHandler = requestHandler orElse { case req => handler(req) })
 
@@ -418,43 +475,7 @@ object Response {
             shouldMemoize,
             (req, rep) => cachedResponse(req, rep).provide(env),
             cacheKey,
-            (requestHandler.orElse(Server.unhandled).andThen(_.provide(env))))
-      }
-    }
-
-    private final class CachedResponse(
-      underlying: Response,
-      contents: Ref[Option[Promise[Throwable, ByteBuffer]]]
-    ) extends Response {
-      override def size: Long = underlying.size
-      override def addHeaders(headers: (String, String)*): Response = new CachedResponse(underlying.addHeaders(headers: _*), contents)
-      override def removeHeader(name: String): Response = new CachedResponse(underlying.removeHeader(name), contents)
-      override def status: Status = underlying.status
-      override def headers: Headers = underlying.headers
-      override private[uzhttp] def writeTo(connection: ConnectionWriter): RIO[Blocking, Unit] = contents.get.flatMap {
-        case Some(promise) => promise.await.flatMap(
-          buf => connection.write(buf.duplicate())
-        )
-        case None => Promise.make[Throwable, ByteBuffer].flatMap {
-          promise =>
-            contents.updateSomeAndGet {
-              case None => Some(promise)
-            }.someOrFail(new IllegalStateException("Promise should exist")).flatMap {
-              promise =>
-                connection.tap.flatMap {
-                  tappedConnection =>
-                    underlying.writeTo(tappedConnection).flatMap {
-                      _ => tappedConnection.finish >>= promise.succeed
-                    }
-                }.tapError(promise.fail)
-            }
-        }.unit
-      }
-    }
-
-    private object CachedResponse {
-      def make(underlying: Response): UIO[CachedResponse] = Ref.make[Option[Promise[Throwable, ByteBuffer]]](None).map {
-        promise => new CachedResponse(underlying, promise)
+            requestHandler.andThen(_.provide(env)))
       }
     }
   }

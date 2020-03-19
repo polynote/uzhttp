@@ -1,6 +1,7 @@
+
 organization := "org.polynote"
 name := "uzhttp"
-version := "0.1.0-SNAPSHOT"
+version := "0.1.1-SNAPSHOT"
 scalaVersion := "2.11.12"
 crossScalaVersions := Seq("2.11.12", "2.12.10", "2.13.1")
 
@@ -26,4 +27,20 @@ scalacOptions ++= Seq(
   "-feature",
   "-Ywarn-value-discard",
   "-Xfatal-warnings"
+)
+
+// publishing settings
+publishMavenStyle := true
+homepage := Some(url("https://polynote.org"))
+licenses := Seq("APL2" -> url("http://www.apache.org/licenses/LICENSE-2.0.txt"))
+scmInfo := Some(
+  ScmInfo(
+    url("https://github.com/polynote/uzhttp"),
+    "scm:git@github.com:polynote/uzhttp.git"
+  )
+)
+publishTo := sonatypePublishToBundle.value
+developers := List(
+  Developer(id = "jeremyrsmith", name = "Jeremy Smith", email = "", url = url("https://github.com/jeremyrsmith")),
+  Developer(id = "jonathanindig", name = "Jonathan Indig", email = "", url = url("https://github.com/jonathanindig"))
 )
