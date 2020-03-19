@@ -59,7 +59,7 @@ object TestServer extends zio.App {
     responseCache(args).use {
       cache =>
         Server.builder(new InetSocketAddress("127.0.0.1", 9121))
-        .handleAll(cache)
+        .handleSome(cache)
         .withMaxPending(Short.MaxValue)
         .withLogger(ServerLogger.Silent)
         //.withLogger(ServerLogger.Debug)
