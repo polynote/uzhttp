@@ -14,6 +14,7 @@ package object server {
     def request(req: Request, rep: Response, startDuration: Duration, finishDuration: Duration): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].request(req, rep, startDuration, finishDuration))
     def debug(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].debug(str))
     def error(str: String, err: Throwable): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].error(str, err))
+    def debugError(str: String, err: Throwable): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].debugError(str, err))
   }
 
   private[server] val EmptyLine: Array[Byte] = CRLF ++ CRLF

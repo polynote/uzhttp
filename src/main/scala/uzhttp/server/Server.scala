@@ -327,12 +327,13 @@ object Server {
           else dur -> (req, rep)
       }.flatMap {
         case (startDuration, (req, rep)) =>
-          rep.writeTo(this).flatMap {
-            _ =>
-              if (rep.closeAfter)
-                close()
-              else
-                ZIO.unit
+          rep.writeTo(this).onTermination {
+            cause => Logging.debugError("Error writing response; closing connection", cause.squash) *> close()
+          }.ensuring {
+            if (rep.closeAfter)
+              close()
+            else
+              ZIO.unit
           }.timed.flatMap {
             case (finishDuration, _) =>
               curReq.set(Left(0 -> Nil)) *> Logging.request(req, rep, startDuration, finishDuration)
@@ -439,8 +440,8 @@ object Server {
         case -1 => close()
         case _  => resetIdleTimeout &> bytesReceived
       }.catchAll {
-        case err: ClosedChannelException => Logging.debug(s"Client closed connection unexpectedly") *> close()
-        case err => Logging.error(s"Closing connection due to read error", err) *> close()
+        case err: ClosedChannelException => Logging.debugError(s"Client closed connection unexpectedly", err) *> close()
+        case err => Logging.debugError(s"Closing connection due to read error", err) *> close()
       }
     }
 
@@ -556,7 +557,7 @@ object Server {
             case key =>
               effect(key.attachment().asInstanceOf[Server.Connection]).flatMap {
                 conn => conn.doRead.catchAll {
-                  err => Logging.error(s"Error reading from connection", err) *> conn.close()
+                  err => Logging.debugError(s"Error reading from connection", err) *> conn.close()
                 }
               }
           }
