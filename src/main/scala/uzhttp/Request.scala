@@ -24,6 +24,7 @@ trait Request {
 
 trait ContinuingRequest extends Request {
   def submitBytes(chunk: Chunk[Byte]): UIO[Unit]
+  def channelClosed(): UIO[Unit]
   def bytesRemaining: UIO[Long]
   def noBufferInput: Boolean
 }
@@ -58,11 +59,12 @@ object Request {
   }
 
   private[uzhttp] final case class ReceivingBody(method: Method, uri: URI, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
-    override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueueWithShutdown(bodyQueue).unTake))
+    override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueue(bodyQueue).unTake))
     override val noBufferInput: Boolean = false
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
     override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
     override def bytesRemaining: UIO[Long] = received.get.map(contentLength - _)
+    override def channelClosed(): UIO[Unit] = bodyQueue.offer(Take.End).unit
     override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Take.Value(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
       case received if received >= contentLength => bodyQueue.offer(Take.End).unit
       case _ => ZIO.unit
@@ -118,8 +120,9 @@ object Request {
     override val body: Option[StreamChunk[HTTPError, Byte]] = None
     override val bytesRemaining: UIO[Long] = ZIO.succeed(Long.MaxValue)
     override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Take.Value(chunk)).unit
+    override def channelClosed(): UIO[Unit] = chunks.offer(Take.End).unit
     override val noBufferInput: Boolean = true
-    lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueueWithShutdown(chunks).unTake)
+    lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueue(chunks).unTake)
   }
 
   object WebsocketRequest {

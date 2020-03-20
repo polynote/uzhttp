@@ -196,7 +196,7 @@ object Server {
   }
 
   private[uzhttp] trait ConnectionWriter {
-    def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit]
+    def withWriteLock[R, E](fn: WritableByteChannel => ZIO[R, E, Unit]): ZIO[R, E, Unit]
     private def writeInternal(channel: WritableByteChannel, bytes: ByteBuffer): Task[Unit] = effect(channel.write(bytes)).as(bytes).doWhile(_.hasRemaining).unit
     def write(bytes: ByteBuffer): Task[Unit] = withWriteLock(channel => writeInternal(channel, bytes))
     def write(bytes: Array[Byte]): Task[Unit] = write(ByteBuffer.wrap(bytes))
@@ -249,7 +249,7 @@ object Server {
 
     final class TappedWriter(underlying: ConnectionWriter) extends ConnectionWriter {
       private val tappedChannel = new TappedChannel()
-      override def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit] = underlying.withWriteLock {
+      override def withWriteLock[R, E](fn: WritableByteChannel => ZIO[R, E, Unit]): ZIO[R, E, Unit] = underlying.withWriteLock {
         underlyingChannel =>
           tappedChannel.underlying.set(underlyingChannel)
           fn(tappedChannel)
@@ -273,7 +273,7 @@ object Server {
     import config._
     import locks._
 
-    override def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit] = writeLock.withPermit(fn(channel))
+    override def withWriteLock[R, E](fn: WritableByteChannel => ZIO[R, E, Unit]): ZIO[R, E, Unit] = writeLock.withPermit(fn(channel))
 
     /**
       * Take n bytes from the top of the input buffer, and shift the remaining bytes (up to the buffer's position), if
@@ -444,12 +444,21 @@ object Server {
       }
     }
 
-    def close(): URIO[Logging, Unit] = writeLock.withPermit {
+    private def endCurrentRequest = curReq.get.flatMap {
+      case Right(req) => req.channelClosed()
+      case _ => ZIO.unit
+    }
+
+    def close(): URIO[Logging, Unit] =
       shutdown.succeed(()).flatMap {
-        case true  => Logging.debug(s"Closing connection") *> effect(channel.close()).orDie *> stopIdleTimeout
+        case true  =>
+          Logging.debug(s"Closing connection") *>
+            endCurrentRequest *>
+            stopIdleTimeout *>
+            withWriteLock(channel => effectTotal(channel.close()))
+
         case false => ZIO.unit
       }
-    }
 
     val awaitShutdown: IO[Throwable, Unit] = shutdown.await
 
@@ -522,7 +531,7 @@ object Server {
       }
     }
 
-    def select: RIO[Logging with Blocking with Clock, Unit] = effectBlockingCancelable(selector.select(500))(effectTotal(selector.wakeup()).unit).flatMap {
+    def select: URIO[Logging with Blocking with Clock, Unit] = effectBlockingCancelable(selector.select(500))(effectTotal(selector.wakeup()).unit).flatMap {
       case 0 =>
         ZIO.unit
       case _ => selectedKeys.flatMap {
@@ -552,10 +561,16 @@ object Server {
               }
           }
       }
+    }.catchAll {
+      err => Logging.debug(s"Error selecting channels: ${err}\n" + err.getStackTrace.mkString("\n\tat "))
+    }.onInterrupt {
+      Logging.debug("Selector interrupted")
     }
 
     def close(): URIO[Logging, Unit] =
-      ZIO.foreach(selector.keys().toIterable)(k => effect(k.cancel())).orDie *> effect(selector.close()).orDie *>
+      Logging.debug("Stopping selector") *>
+        ZIO.foreach(selector.keys().toIterable)(k => effect(k.cancel())).orDie *>
+        effect(selector.close()).orDie *>
         effect(serverSocket.close()).orDie
 
     def run: RIO[Logging with Blocking with Clock, Nothing] = (select *> ZIO.yieldNow).forever
@@ -567,6 +582,7 @@ object Server {
         .toManaged(s => effectTotal(s.close()))
         .flatMap {
           selector =>
+            serverChannel.configureBlocking(false)
             val connectKey = serverChannel.register(selector, SelectionKey.OP_ACCEPT)
             ZIO.effectTotal(new ChannelSelector(selector, serverChannel, connectKey, requestHandler, errorHandler, config)).toManaged(_.close())
         }

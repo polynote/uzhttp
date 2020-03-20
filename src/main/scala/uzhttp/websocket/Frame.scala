@@ -4,8 +4,7 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
 import zio.{Chunk, ZIO}
-import zio.stream.{Sink, Stream, ZSink}
-
+import zio.stream.{Sink, Stream, Take, ZSink, ZStream}
 import Frame.frameBytes
 
 sealed trait Frame {
@@ -26,13 +25,15 @@ object Frame {
 
   case class FrameHeader(fin: Boolean, opcode: Byte, mask: Boolean, lengthIndicator: Byte)
 
-  private abstract class ArrayReaderSink[T](numBytes: Int) extends ZSink[Any, Nothing, Chunk[Byte], Chunk[Byte], T] {
+  private abstract class ArrayReaderSink[T](numBytes: Int) extends ZSink[Any, NotEnoughBytes.type, Chunk[Byte], Chunk[Byte], T] {
     override final type State = Chunk[Byte]
     override final def cont(chunk: Chunk[Byte]): Boolean = chunk.length < numBytes
     override final def initial: ZIO[Any, Nothing, Chunk[Byte]] = ZIO.succeed(Chunk.empty)
     override final def step(state: Chunk[Byte], a: Chunk[Byte]): ZIO[Any, Nothing, Chunk[Byte]] = ZIO.succeed(state ++ a)
-    override final def extract(chunk: Chunk[Byte]): ZIO[Any, Nothing, (T, Chunk[Chunk[Byte]])] =
-      ZIO.succeed((parseArray(chunk.take(numBytes).toArray), Chunk(chunk.drop(numBytes))))
+    override final def extract(chunk: Chunk[Byte]): ZIO[Any, NotEnoughBytes.type, (T, Chunk[Chunk[Byte]])] =
+      if (chunk.length >= numBytes)
+        ZIO.succeed((parseArray(chunk.take(numBytes).toArray), Chunk(chunk.drop(numBytes))))
+      else ZIO.fail(NotEnoughBytes)
 
     def parseArray(arr: Array[Byte]): T
   }
@@ -67,7 +68,7 @@ object Frame {
   }
 
   // Parses one frame from a websocket byte stream
-  private val parseFrame: Sink[FrameTooLong, Chunk[Byte], Chunk[Byte], Frame] = ParseFrameHeader.flatMap {
+  private val parseFrame: Sink[Throwable, Chunk[Byte], Chunk[Byte], Frame] = ParseFrameHeader.flatMap {
     case FrameHeader(fin, opcode, mask, lengthIndicator) =>
       val parseLen = lengthIndicator match {
         case 127 => ParseLongLength
@@ -105,10 +106,14 @@ object Frame {
   }
 
   // Parses websocket frames from the bytestream using the parseFrame sink
-  private[uzhttp] def parse(stream: Stream[Throwable, Chunk[Byte]]): Stream[Throwable, Frame] = stream.aggregate(parseFrame)
+  private[uzhttp] def parse(stream: Stream[Throwable, Chunk[Byte]]): Stream[Throwable, Frame] = stream.aggregate(parseFrame).map(Take.Value(_)).catchAll {
+    case NotEnoughBytes => ZStream(Take.End)
+    case err => ZStream.fail(err)
+  }.unTake
 
   // We don't handle frames that are over 2GB, because Java can't handle their length.
   final case class FrameTooLong(length: Long) extends Throwable(s"Frame length $length exceeds Int.MaxValue")
+  case object NotEnoughBytes extends Throwable("Not enough bytes remaining")
 
   private[websocket] def frameSize(payloadLength: Int) =
     if (payloadLength < 126)
