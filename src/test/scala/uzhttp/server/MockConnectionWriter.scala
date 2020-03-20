@@ -3,7 +3,7 @@ package uzhttp.server
 import java.nio.ByteBuffer
 import java.nio.channels.WritableByteChannel
 
-import zio.{Chunk, RIO, Ref, Semaphore}
+import zio.{Chunk, RIO, Ref, Semaphore, ZIO}
 import TestRuntime.runtime.unsafeRun
 
 case class MockConnectionWriter(writtenBytes: Ref[Chunk[Byte]] = unsafeRun(Ref.make(Chunk.empty))) extends Server.ConnectionWriter {
@@ -18,5 +18,5 @@ case class MockConnectionWriter(writtenBytes: Ref[Chunk[Byte]] = unsafeRun(Ref.m
     override def close(): Unit = ()
   }
 
-  override def withWriteLock[R](fn: WritableByteChannel => RIO[R, Unit]): RIO[R, Unit] = writeLock.withPermit(fn(channel))
+  override def withWriteLock[R, E](fn: WritableByteChannel => ZIO[R, E, Unit]): ZIO[R, E, Unit] = writeLock.withPermit(fn(channel))
 }
