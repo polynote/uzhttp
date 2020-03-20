@@ -162,6 +162,9 @@ object Server {
     def logDebug[R1 <: R](debugLogger: (=> String) => URIO[R1, Unit]): Builder[R1] =
       copy(logger = logger.copy(debug = debugLogger))
 
+    def logDebugErrors[R1 <: R](debugErrorLogger: (String, Throwable) => URIO[R1, Unit]): Builder[R1] =
+      copy(logger = logger.copy(debugError = debugErrorLogger))
+
     private def build: ZManaged[R with Blocking with Logging, Throwable, Server] =
       mkSocket(address, config.maxPending)
         .flatMap {
