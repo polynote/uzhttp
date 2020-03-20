@@ -66,7 +66,7 @@ Here's an example:
 ```scala
 import java.net.InetSocketAddress
 import uzhttp.server.Server
-import uzhttp.{Request, Response}
+import uzhttp.{Request, Response, RefineOps}
 import uzhttp.websocket.Frame
 import zio.{App, ZIO, Task}
 
