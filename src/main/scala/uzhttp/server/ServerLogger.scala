@@ -32,13 +32,13 @@ object ServerLogger {
   val defaultInfoLogger: (=> String) => UIO[Unit] = str => effectTotal(System.err.println(s"[INFO]    $str"))
   val defaultErrorLogger: (String, Throwable) => UIO[Unit] = (str, err) => effectTotal { System.err.println(s"[ERROR]   $str"); err.printStackTrace(System.err) }
   val defaultDebugLogger: (=> String) => UIO[Unit] = str => effectTotal(System.err.println(s"[DEBUG]   $str"))
-  val defaultDebugLogger: (String, Throwable) => ZIO[Any, Nothing, Unit] = (str, err) => effectTotal { System.err.println(s"[DEBUG]   $str"); err.printStackTrace(System.err) }
+  val defaultDebugErrorLogger: (String, Throwable) => ZIO[Any, Nothing, Unit] = (str, err) => effectTotal { System.err.println(s"[DEBUG]   $str"); err.printStackTrace(System.err) }
   val noLog: (=> String) => UIO[Unit] = _ => ZIO.unit
   val noLogRequests: (Request, Response, Duration, Duration) => UIO[Unit] = (_, _, _, _) => ZIO.unit
   val noLogErrors: (String, Throwable) => ZIO[Any, Nothing, Unit] = (_, _) => ZIO.unit
 
   lazy val Default: ServerLogger[Any] = ServerLogger(defaultInfoLogger, defaultRequestLogger, defaultErrorLogger, noLogErrors, noLog)
-  lazy val Debug: ServerLogger[Any] = Default.copy(debug = defaultDebugLogger, )
+  lazy val Debug: ServerLogger[Any] = Default.copy(debug = defaultDebugLogger, debugError = defaultDebugErrorLogger)
   lazy val Quiet: ServerLogger[Any] = Default.copy(info = noLog, request = noLogRequests)
   lazy val Silent: ServerLogger[Any] = Quiet.copy(error = noLogErrors)
 }
