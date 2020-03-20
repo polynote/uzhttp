@@ -74,11 +74,14 @@ object ExampleServer extends App {
   override def run(args:  List[String]): ZIO[zio.ZEnv, Nothing, Int] =
     Server.builder(new InetSocketAddress("127.0.0.1", 8080))
       .handleSome {
-        case req if req.uri startsWith "/static" =>
-          Response.fromResource(s"staticFiles${req.uri}", req) // deliver a static file from an application resource
-        case req if req.uri == "/" =>
-          Response.html("<html><body><h1>Hello world!</h1></body></html>") // deliver a constant HTML response
-        case req@Request.WebsocketRequest(_, uri, _, _, inputFrames) if uri startsWith "/ws" =>
+        case req if req.uri.getPath startsWith "/static" =>
+          // deliver a static file from an application resource
+          Response.fromResource(s"staticFiles${req.uri}", req).refineHTTP(req)
+        case req if req.uri.getPath == "/" =>
+          // deliver a constant HTML response
+          ZIO.succeed(Response.html("<html><body><h1>Hello world!</h1></body></html>"))
+        case req@Request.WebsocketRequest(_, uri, _, _, inputFrames)
+          if uri.getPath startsWith "/ws" =>
           // inputFrames are the incoming frames; construct a websocket session
           // by giving a stream of output frames
           Response.websocket(req, inputFrames.mapM(respondToWebsocketFrame))
