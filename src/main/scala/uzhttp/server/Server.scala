@@ -577,7 +577,9 @@ object Server {
         effect(selector.close()).orDie *>
         effect(serverSocket.close()).orDie
 
-    def run: RIO[Logging with Blocking with Clock, Nothing] = (select *> ZIO.yieldNow).forever
+    def run: RIO[Logging with Blocking with Clock, Nothing] = (select *> ZIO.yieldNow).forever.onInterrupt {
+      Logging.debug("Selector loop interrupted")
+    }
   }
 
   private object ChannelSelector {
