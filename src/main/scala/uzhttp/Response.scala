@@ -53,6 +53,11 @@ trait Response {
   def cached: UIO[Response] = Response.CachedResponse.make(this)
   def cachedManaged: ZManaged[Any, Nothing, Response] = Response.CachedResponse.managed(this)
 
+  /**
+    * Terminate the response, if it's still writing.
+    */
+  def close: UIO[Unit] = ZIO.unit
+
   private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit]
   private[uzhttp] def closeAfter: Boolean = headers.exists {
     case (k, v) => k.toLowerCase == "connection" && v.toLowerCase == "close"
@@ -330,10 +335,11 @@ object Response {
     override val status: Status = Status.SwitchingProtocols
     override def addHeaders(headers: (String, String)*): Response = copy(headers = this.headers ++ headers)
     override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
+    override def close: UIO[Unit] = closed.succeed(()).unit
     override private[uzhttp] val closeAfter = true
 
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] = {
-      connection.writeByteBuffers(Stream(ByteBuffer.wrap(Response.headerBytes(this))) ++ frames.map(_.toBytes))
+      connection.writeByteBuffers(Stream(ByteBuffer.wrap(Response.headerBytes(this))) ++ frames.map(_.toBytes).haltWhen(closed))
     }
   }
 

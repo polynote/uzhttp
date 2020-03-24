@@ -264,6 +264,7 @@ object Server {
   private[uzhttp] final class Connection private (
     inputBuffer: ByteBuffer,
     curReq: Ref[Either[(Int, List[String]), ContinuingRequest]],
+    curRep: Ref[Option[Response]],
     requestHandler: Request => IO[HTTPError, Response],
     errorHandler: HTTPError => UIO[Response],
     config: Config,
@@ -330,7 +331,7 @@ object Server {
           else dur -> (req, rep)
       }.flatMap {
         case (startDuration, (req, rep)) =>
-          rep.writeTo(this).onTermination {
+          curRep.set(Some(rep)) *> rep.writeTo(this).onTermination {
             cause => Logging.debugError("Error writing response; closing connection", cause.squash) *> close()
           }.ensuring {
             if (rep.closeAfter)
@@ -453,12 +454,18 @@ object Server {
       case _ => ZIO.unit
     }
 
+    private def closeResponse = curRep.get.flatMap {
+      case Some(rep) => rep.close
+      case None      => ZIO.unit
+    }
+
     def close(): URIO[Logging, Unit] =
       shutdown.succeed(()).flatMap {
         case true  =>
           Logging.debug(s"Closing connection") *>
             endCurrentRequest *>
             stopIdleTimeout *>
+            closeResponse *>
             withWriteLock(channel => effectTotal(channel.close()))
 
         case false => ZIO.unit
@@ -498,10 +505,11 @@ object Server {
     def apply(channel: SocketChannel, requestHandler: Request => IO[HTTPError, Response], errorHandler: HTTPError => UIO[Response], config: Config): ZManaged[Logging with Clock, Nothing, Connection] = {
       for {
         curReq      <- Ref.make[Either[(Int, List[String]), ContinuingRequest]](Left(0 -> Nil))
+        curRep      <- Ref.make[Option[Response]](None)
         locks       <- Locks.make
         shutdown    <- Promise.make[Throwable, Unit]
         idleTimeout <- ZIO.unit.fork >>= Ref.make[Fiber[Nothing, Unit]]
-        connection  = new Connection(ByteBuffer.allocate(config.inputBufferSize), curReq, requestHandler, errorHandler, config, channel, locks, shutdown, idleTimeout)
+        connection  = new Connection(ByteBuffer.allocate(config.inputBufferSize), curReq, curRep, requestHandler, errorHandler, config, channel, locks, shutdown, idleTimeout)
       } yield connection
     }.toManaged(_.close()).tapM { conn =>
       config.connectionIdleTimeout match {
@@ -560,7 +568,7 @@ object Server {
             case key =>
               effect(key.attachment().asInstanceOf[Server.Connection]).flatMap {
                 conn => conn.doRead.catchAll {
-                  err => Logging.debugError(s"Error reading from connection", err) *> conn.close()
+                  err => Logging.debugError(s"Error reading from connection", err) *> conn.close().forkDaemon.unit
                 }
               }
           }
