@@ -201,17 +201,18 @@ object Response {
 
   /**
     * Start a websocket request from a stream of [[uzhttp.websocket.Frame]]s.
-    * @param req    The websocket request that initiated this response.
-    * @param output A stream of websocket [[uzhttp.websocket.Frame]]s to be sent to the client.
+    * @param req     The websocket request that initiated this response.
+    * @param output  A stream of websocket [[uzhttp.websocket.Frame]]s to be sent to the client.
+    * @param headers Any additional headers to include in the response.
     */
-  def websocket(req: Request, output: Stream[Throwable, Frame]): IO[BadRequest, WebsocketResponse] = {
+  def websocket(req: Request, output: Stream[Throwable, Frame], headers: List[(String, String)] = Nil): IO[BadRequest, WebsocketResponse] = {
     val handshakeHeaders = ZIO.effectTotal(req.headers.get("Sec-WebSocket-Key")).someOrFail(BadRequest("Missing Sec-WebSocket-Key")).map {
       acceptKey =>
         val acceptHash = Base64.getEncoder.encodeToString {
           MessageDigest.getInstance("SHA-1")
             .digest((acceptKey ++ "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").getBytes(StandardCharsets.US_ASCII))
         }
-        List("Upgrade" -> "websocket", "Connection" -> "upgrade", "Sec-WebSocket-Accept" -> acceptHash)
+        ("Upgrade", "websocket") :: ("Connection", "upgrade") :: ("Sec-WebSocket-Accept", acceptHash) :: headers
     }
 
     for {
