@@ -35,8 +35,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
                   case Binary(data, isLast) if data.length >= 10240 =>
                     // the STTP client (netty-based) can't handle large frames in response
                     // so digest instead (can't figure out how to configure that)
-                    val checksum = MessageDigest.getInstance("MD5").digest(data)
-                    Binary(checksum, isLast)
+                    Binary(md5(data), isLast)
                   case frame => frame
                 }.into(output).fork.unit
             }
@@ -138,9 +137,10 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
     }
 
     "handles websocket request" in {
-      val smallBinaryData = Array.tabulate(125)(i => i.toByte)
-      val binaryData = Array.tabulate(256)(i => i.toByte)
-      val bigBinaryData = new Array[Byte](Short.MaxValue * 2 + 1)
+      val smallBinaryData = Array.tabulate(125)(i => i.toByte)  // covers no length indicatro
+      val binaryData = Array.tabulate(256)(i => i.toByte)       // covers length indicator 126, length < 32767
+      val bigBinaryData = new Array[Byte](Short.MaxValue + 50)  // covers length indicator 126, length > 32767
+      val hugeBinaryData = new Array[Byte](Short.MaxValue + Short.MaxValue + 2) // covers length indicator 127
       scala.util.Random.nextBytes(bigBinaryData)
       val strData = "This is a string to the websocket"
 
@@ -158,19 +158,24 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           binaryEcho      <- errOnClose(sock.receiveBinary(true))
           _               <- sock.send(WebSocketFrame.binary(bigBinaryData))
           bigBinaryEcho   <- errOnClose(sock.receiveBinary(true))
+          _               <- sock.send(WebSocketFrame.binary(hugeBinaryData))
+          hugeBinaryEcho  <- errOnClose(sock.receiveBinary(true))
           _               <- sock.send(WebSocketFrame.text(strData))
           stringEcho      <- errOnClose(sock.receiveText(true))
           _               <- sock.send(WebSocketFrame.close)
         } yield {
           smallBinaryEcho must contain theSameElementsInOrderAs smallBinaryData
           binaryEcho must contain theSameElementsInOrderAs binaryData
-          bigBinaryEcho must contain theSameElementsInOrderAs MessageDigest.getInstance("MD5").digest(bigBinaryData)
+          bigBinaryEcho must contain theSameElementsInOrderAs md5(bigBinaryData)
+          hugeBinaryEcho must contain theSameElementsInOrderAs md5(hugeBinaryData)
           stringEcho mustEqual strData
         }
       }
     }
 
   }
+
+  private def md5(data: Array[Byte]): Array[Byte] = MessageDigest.getInstance("MD5").digest(data)
 
   override def afterAll(): Unit = {
     unsafeRun(runningServer.shutdown())
