@@ -56,7 +56,7 @@ object Frame {
   }
 
   private object ParseShortLength extends BufReaderSink[Long](2) {
-    override final def parseBuffer(buf: ByteBuffer): Long = buf.getShort().toLong
+    override final def parseBuffer(buf: ByteBuffer): Long = java.lang.Short.toUnsignedInt(buf.getShort()).toLong
   }
 
   private object ParseMask extends BufReaderSink[Int](4) {

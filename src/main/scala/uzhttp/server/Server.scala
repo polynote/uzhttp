@@ -348,7 +348,8 @@ object Server {
     val doRead: RIO[Logging with Blocking with Clock, Unit] = readLock.withPermit {
       def bytesReceived: ZIO[Logging with Blocking with Clock, HTTPError, Unit] = if (inputBuffer.position() > 0) {
         val numBytes = inputBuffer.position()
-        curReq.get.flatMap {
+
+        def readNext(state: Either[(Int, List[String]), ContinuingRequest]): ZIO[Logging with Blocking with Clock, HTTPError, Unit] = state match {
           case Right(req) =>
             req.bytesRemaining.flatMap {
               case bytesRemaining if bytesRemaining <= numBytes =>
@@ -438,6 +439,7 @@ object Server {
               }
             } else ZIO.unit
         }
+        curReq.get.flatMap(readNext)
       } else ZIO.yieldNow
 
       effect(channel.read(inputBuffer)).flatMap {
