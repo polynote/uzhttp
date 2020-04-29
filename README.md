@@ -85,7 +85,7 @@ object ExampleServer extends App {
           // inputFrames are the incoming frames; construct a websocket session
           // by giving a stream of output frames
           Response.websocket(req, inputFrames.mapM(respondToWebsocketFrame))
-      }.serve.useForever
+      }.serve.useForever.orDie
 
   def respondToWebsocketFrame(frame: Frame): Task[Frame] = ???
 }
