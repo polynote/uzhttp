@@ -17,7 +17,7 @@ Probably not! Here are just a few better options:
 * If you want a full-featured HTTP server which is battle-tested, built on robust technology, supports middleware, and
   has a purely functional API with a nice DSL, go for [http4s](https://github.com/http4s/http4s) – it has pretty good
   interoperability with ZIO by using [zio-interop-cats](https://github.com/zio/interop-cats).
-* If you want the above features but with a native ZIO solution, wait for [zio-http](https://github.com/zio/zio-http).
+* If you want the above features but with a native ZIO solution, wait for [zio-web](https://github.com/zio/zio-web).
 * If you want a more minimal solution, that's still got a prinicpled, purely functional API but is production-ready and
   properly engineered, take a look at [finch](https://github.com/finagle/finch).
 
