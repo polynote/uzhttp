@@ -1,6 +1,7 @@
 package uzhttp.server
 
 import java.net.InetSocketAddress
+import java.security.MessageDigest
 
 import zio.{Chunk, Queue, Ref, Task, ZIO}
 import zio.stream.{Sink, Stream, Take}
@@ -10,8 +11,10 @@ import org.scalatest.matchers.must.Matchers
 import sttp.client.{Response => _, _}
 import sttp.client.asynchttpclient.WebSocketHandler
 import sttp.client.asynchttpclient.zio._
+import sttp.client.ws.WebSocketEvent
 import sttp.model.ws.WebSocketFrame
 import uzhttp.{HTTPError, Request, Response, websocket}
+import websocket.Binary
 
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
@@ -27,7 +30,14 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
               req,
               Stream.fromQueue(output).unTake
             ).tap {
-              socket => frames.into(output).fork.unit
+              socket =>
+                frames.map {
+                  case Binary(data, isLast) if data.length >= 10240 =>
+                    // the STTP client (netty-based) can't handle large frames in response
+                    // so digest instead (can't figure out how to configure that)
+                    Binary(md5(data), isLast)
+                  case frame => frame
+                }.into(output).fork.unit
             }
           }
 
@@ -127,27 +137,45 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
     }
 
     "handles websocket request" in {
-      val binaryData = Array.tabulate(256)(i => i.toByte)
+      val smallBinaryData = Array.tabulate(125)(i => i.toByte)  // covers no length indicatro
+      val binaryData = Array.tabulate(256)(i => i.toByte)       // covers length indicator 126, length < 32767
+      val bigBinaryData = new Array[Byte](Short.MaxValue + 50)  // covers length indicator 126, length > 32767
+      val hugeBinaryData = new Array[Byte](Short.MaxValue + Short.MaxValue + 2) // covers length indicator 127
+      scala.util.Random.nextBytes(bigBinaryData)
       val strData = "This is a string to the websocket"
+
+      def errOnClose[A](zio: Task[Either[WebSocketEvent.Close, A]]): Task[A] =
+        zio.flatMap(ei => ZIO.fromEither(ei).orElseFail(new Exception("Websocket closed early")))
 
       unsafeRun {
         for {
-          received   <- Queue.unbounded[Any]
-          response   <- basicRequest.get(uri"ws://localhost:$port/websocketTest").openWebsocketF(ZioWebSocketHandler())
-          sock        = response.result
-          _          <- sock.send(WebSocketFrame.binary(binaryData))
-          binaryEcho <- sock.receiveBinary(true).flatMap(ei => ZIO.fromEither(ei)).mapError(_ => new Exception("Websocket closed early"))
-          _          <- sock.send(WebSocketFrame.text(strData))
-          stringEcho <- sock.receiveText(true).flatMap(ei => ZIO.fromEither(ei)).mapError(_ => new Exception("Websocket closed early"))
-          _          <- sock.send(WebSocketFrame.close)
+          received        <- Queue.unbounded[Any]
+          response        <- basicRequest.get(uri"ws://localhost:$port/websocketTest").openWebsocketF(ZioWebSocketHandler())
+          sock             = response.result
+          _               <- sock.send(WebSocketFrame.binary(smallBinaryData))
+          smallBinaryEcho <- errOnClose(sock.receiveBinary(true))
+          _               <- sock.send(WebSocketFrame.binary(binaryData))
+          binaryEcho      <- errOnClose(sock.receiveBinary(true))
+          _               <- sock.send(WebSocketFrame.binary(bigBinaryData))
+          bigBinaryEcho   <- errOnClose(sock.receiveBinary(true))
+          _               <- sock.send(WebSocketFrame.binary(hugeBinaryData))
+          hugeBinaryEcho  <- errOnClose(sock.receiveBinary(true))
+          _               <- sock.send(WebSocketFrame.text(strData))
+          stringEcho      <- errOnClose(sock.receiveText(true))
+          _               <- sock.send(WebSocketFrame.close)
         } yield {
-          binaryEcho must contain theSameElementsInOrderAs binaryEcho
+          smallBinaryEcho must contain theSameElementsInOrderAs smallBinaryData
+          binaryEcho must contain theSameElementsInOrderAs binaryData
+          bigBinaryEcho must contain theSameElementsInOrderAs md5(bigBinaryData)
+          hugeBinaryEcho must contain theSameElementsInOrderAs md5(hugeBinaryData)
           stringEcho mustEqual strData
         }
       }
     }
 
   }
+
+  private def md5(data: Array[Byte]): Array[Byte] = MessageDigest.getInstance("MD5").digest(data)
 
   override def afterAll(): Unit = {
     unsafeRun(runningServer.shutdown())
