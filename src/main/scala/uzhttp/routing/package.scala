@@ -1,6 +1,6 @@
 package uzhttp
 
-import uzhttp.Request.Method.{GET, POST, PUT}
+import uzhttp.Request.Method.{DELETE, GET, HEAD, PATCH, POST, PUT}
 import zio.ZIO
 
 
@@ -77,6 +77,18 @@ package object routing {
 
   def put[R](f: PartialFunction[Request, ZR[R]]): PartialFunction[Request, ZR[R]] = {
     case req if req.method == PUT && f.isDefinedAt(req) => f(req)
+  }
+
+  def delete[R](f: PartialFunction[Request, ZR[R]]): PartialFunction[Request, ZR[R]] = {
+    case req if req.method == DELETE && f.isDefinedAt(req) => f(req)
+  }
+
+  def patch[R](f: PartialFunction[Request, ZR[R]]): PartialFunction[Request, ZR[R]] = {
+    case req if req.method == PATCH && f.isDefinedAt(req) => f(req)
+  }
+
+  def head[R](f: PartialFunction[Request, ZR[R]]): PartialFunction[Request, ZR[R]] = {
+    case req if req.method == HEAD && f.isDefinedAt(req) => f(req)
   }
 
   def path[R](z: Parameter)(f: PartialFunction[(Request, String), ZR[R]] ): PartialFunction[Request, ZR[R]]  = {
