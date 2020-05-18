@@ -12,10 +12,6 @@ package object routing {
     def ~(that: PartialFunction[Request, ZIO[R, HTTPError, Response]]): PartialFunction[Request, ZIO[R, HTTPError, Response]] = underlying orElse that
   }
 
-  def else404[R]: PartialFunction[Request, ZR[R]] = {
-    case _ => ZIO.succeed(Response.html("<html><body><h1>Go F yourself</h1></body></html>"))
-  }
-
   sealed private[routing] trait Parameter {
     def underlying: String
   }
