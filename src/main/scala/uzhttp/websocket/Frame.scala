@@ -32,8 +32,8 @@ object Frame {
   final case class NeedHeader(bytes: Chunk[Byte]) extends State
   final case class NeedShortLength(bytes: Chunk[Byte], header: FrameHeader) extends State
   final case class NeedLongLength(bytes: Chunk[Byte], header: FrameHeader) extends State
-  final case class NeedMask(bytes: Chunk[Byte], header: FrameHeader, length: Long) extends State
-  final case class ParsingFrame(bytes: Chunk[Byte], header: FrameHeader, length: Long, maskBytes: Int) extends State
+  final case class NeedMask(bytes: Chunk[Byte], header: FrameHeader, length: Int) extends State
+  final case class ParsingFrame(bytes: Chunk[Byte], header: FrameHeader, length: Int, maskBytes: Int) extends State
   final case class Fail(err: FrameError) extends State
   final case class Emit(frame: Frame, remainder: Chunk[Byte]) extends State
 
@@ -51,7 +51,7 @@ object Frame {
           case 127 => NeedLongLength(accum, frameHeader)
           case 126 => NeedShortLength(accum, frameHeader)
           case n if frameHeader.mask => NeedMask(accum, frameHeader, n)
-          case n => ParsingFrame(accum, frameHeader, n.toLong, 0)
+          case n => ParsingFrame(accum, frameHeader, java.lang.Byte.toUnsignedInt(n), 0)
         }
         nextState(next, Chunk.empty)
       } else NeedHeader(bytes)
@@ -60,12 +60,12 @@ object Frame {
       if (bytes.size >= 2) {
         val b0 = bytes.head
         val b1 = bytes(1)
-        val length = (java.lang.Byte.toUnsignedLong(b0) << 8) | java.lang.Byte.toUnsignedLong(b1)
+        val length = (java.lang.Byte.toUnsignedInt(b0) << 8) | java.lang.Byte.toUnsignedInt(b1)
         val accum = bytes.drop(2)
         val next = if (header.mask) {
-          NeedMask(accum, header, length)
+          NeedMask(accum, header, length.toInt)
         } else {
-          ParsingFrame(accum, header, length, 0)
+          ParsingFrame(accum, header, length.toInt, 0)
         }
         nextState(next, Chunk.empty)
       } else NeedShortLength(bytes, header)
@@ -78,9 +78,9 @@ object Frame {
         } else {
           val accum = bytes.drop(8)
           val next = if (header.mask) {
-            NeedMask(accum, header, length)
+            NeedMask(accum, header, length.toInt)
           } else {
-            ParsingFrame(accum, header, length, 0)
+            ParsingFrame(accum, header, length.toInt, 0)
           }
           nextState(next, Chunk.empty)
         }
@@ -92,9 +92,8 @@ object Frame {
         val accum = bytes.drop(4)
         nextState(ParsingFrame(accum, header, length, mask), Chunk.empty)
       } else NeedMask(bytes, header, length)
-    case ParsingFrame(prevBytes, header, lengthLong, maskKey) =>
+    case ParsingFrame(prevBytes, header, length, maskKey) =>
       val bytes = prevBytes ++ chunk
-      val length = lengthLong.toInt
       if (bytes.length >= length) {
         val body = bytes.take(length).toArray
         if (header.mask) {
@@ -102,7 +101,7 @@ object Frame {
         }
         val remainder = bytes.drop(length)
         Emit(Frame(header.fin, header.opcode, body), remainder)
-      } else ParsingFrame(bytes, header, lengthLong, maskKey)
+      } else ParsingFrame(bytes, header, length, maskKey)
     case fail@Fail(_) => fail
     case Emit(_, remainder) =>
       nextState(NeedHeader(remainder), chunk)
