@@ -4,7 +4,9 @@ import java.net.InetSocketAddress
 import java.security.MessageDigest
 
 import zio.{Chunk, Queue, Ref, Task, ZIO}
-import zio.stream.{Sink, Stream, ZStream}, ZStream.Take
+import zio.stream.{Sink, Stream, ZStream}
+import ZStream.Take
+import org.asynchttpclient.DefaultAsyncHttpClientConfig
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
@@ -19,27 +21,21 @@ import websocket.Binary
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
   private val runningServerRef: Ref[Option[Server]] = unsafeRun(Ref.make(None))
-  private implicit val backend: SttpBackend[Task, Nothing, WebSocketHandler] = unsafeRun(AsyncHttpClientZioBackend())
+  private implicit val backend: SttpBackend[Task, Nothing, WebSocketHandler] = unsafeRun(AsyncHttpClientZioBackend.usingConfig(
+    new DefaultAsyncHttpClientConfig.Builder().setWebSocketMaxFrameSize(Int.MaxValue).setWebSocketMaxBufferSize(8192).build()
+  ))
 
   private val serverTask = unsafeRun {
     val managed = Server.builder(new InetSocketAddress("127.0.0.1", 0))
       .handleAll {
         case req@Request.WebsocketRequest(_, _, _, _, frames) =>
-          Queue.unbounded[Take[Throwable, websocket.Frame]].flatMap {
-            output => Response.websocket(
-              req,
-              Stream.fromQueue(output).collectWhileSuccess.flattenChunks
-            ).tap {
-              socket =>
-                frames.map {
-                  case Binary(data, isLast) if data.length >= 10240 =>
-                    // the STTP client (netty-based) can't handle large frames in response
-                    // so digest instead (can't figure out how to configure that)
-                    Binary(md5(data), isLast)
-                  case frame => frame
-                }.into(output).fork.unit
+          Response.websocket(
+            req,
+            frames.flatMap {
+              frame => Stream(frame, frame)
             }
-          }
+          )
+
 
         case req =>
           if (req.headers.get("Content-Length").map(_.toInt).exists(_ > 0)) {
@@ -137,7 +133,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
     }
 
     "handles websocket request" in {
-      val smallBinaryData = Array.tabulate(125)(i => i.toByte)  // covers no length indicatro
+      val smallBinaryData = Array.tabulate(64)(i => i.toByte)   // covers no length indicator
       val binaryData = Array.tabulate(256)(i => i.toByte)       // covers length indicator 126, length < 32767
       val bigBinaryData = new Array[Byte](Short.MaxValue + 50)  // covers length indicator 126, length > 32767
       val hugeBinaryData = new Array[Byte](Short.MaxValue + Short.MaxValue + 2) // covers length indicator 127
@@ -149,26 +145,37 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
 
       unsafeRun {
         for {
-          received        <- Queue.unbounded[Any]
-          response        <- basicRequest.get(uri"ws://localhost:$port/websocketTest").openWebsocketF(ZioWebSocketHandler())
-          sock             = response.result
-          _               <- sock.send(WebSocketFrame.binary(smallBinaryData))
-          smallBinaryEcho <- errOnClose(sock.receiveBinary(true))
-          _               <- sock.send(WebSocketFrame.binary(binaryData))
-          binaryEcho      <- errOnClose(sock.receiveBinary(true))
-          _               <- sock.send(WebSocketFrame.binary(bigBinaryData))
-          bigBinaryEcho   <- errOnClose(sock.receiveBinary(true))
-          _               <- sock.send(WebSocketFrame.binary(hugeBinaryData))
-          hugeBinaryEcho  <- errOnClose(sock.receiveBinary(true))
-          _               <- sock.send(WebSocketFrame.text(strData))
-          stringEcho      <- errOnClose(sock.receiveText(true))
-          _               <- sock.send(WebSocketFrame.close)
+          received <- Queue.unbounded[Any]
+          response <- basicRequest.get(uri"ws://localhost:$port/websocketTest").openWebsocketF(ZioWebSocketHandler())
+          sock      = response.result
+          // each frame is echoed twice
+          _        <- sock.send(WebSocketFrame.binary(smallBinaryData))
+          small1   <- errOnClose(sock.receiveBinary(true))
+          small2   <- errOnClose(sock.receiveBinary(true))
+          _        <- sock.send(WebSocketFrame.binary(binaryData))
+          mid1     <- errOnClose(sock.receiveBinary(true))
+          mid2     <- errOnClose(sock.receiveBinary(true))
+          _        <- sock.send(WebSocketFrame.binary(bigBinaryData))
+          big1     <- errOnClose(sock.receiveBinary(true))
+          big2     <- errOnClose(sock.receiveBinary(true))
+          _        <- sock.send(WebSocketFrame.binary(hugeBinaryData))
+          huge1    <- errOnClose(sock.receiveBinary(true))
+          huge2    <- errOnClose(sock.receiveBinary(true))
+          _        <- sock.send(WebSocketFrame.text(strData))
+          string1  <- errOnClose(sock.receiveText(true))
+          string2  <- errOnClose(sock.receiveText(true))
+          _        <- sock.send(WebSocketFrame.close)
         } yield {
-          smallBinaryEcho must contain theSameElementsInOrderAs smallBinaryData
-          binaryEcho must contain theSameElementsInOrderAs binaryData
-          bigBinaryEcho must contain theSameElementsInOrderAs md5(bigBinaryData)
-          hugeBinaryEcho must contain theSameElementsInOrderAs md5(hugeBinaryData)
-          stringEcho mustEqual strData
+          small1 must contain theSameElementsInOrderAs smallBinaryData
+          small2 must contain theSameElementsInOrderAs smallBinaryData
+          mid1 must contain theSameElementsInOrderAs binaryData
+          mid2 must contain theSameElementsInOrderAs binaryData
+          big1 must contain theSameElementsInOrderAs bigBinaryData
+          big2 must contain theSameElementsInOrderAs bigBinaryData
+          huge1 must contain theSameElementsInOrderAs hugeBinaryData
+          huge2 must contain theSameElementsInOrderAs hugeBinaryData
+          string1 mustEqual strData
+          string2 mustEqual strData
         }
       }
     }
