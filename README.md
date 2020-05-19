@@ -26,8 +26,7 @@ Probably not! Here are just a few better options:
 * Uses 100% non-blocking NIO for its networking (after it's bound, anyway), so it won't gobble up your blocking thread
   pool.
 * Supports the basic HTTP request types as well as basic websockets.
-* Has no dependencies other than zio and zio-streams (not even [zio-nio](https://github.com/zio/zio-nio), since Polynote –
-  and therefore uzhttp – has to support Scala 2.11 thanks to Spark 🙄)
+* Has no dependencies other than zio and zio-streams.
 
 ### What important features does it lack?
 
