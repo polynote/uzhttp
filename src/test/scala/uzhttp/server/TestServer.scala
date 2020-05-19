@@ -6,11 +6,12 @@ import java.util.concurrent.TimeUnit
 
 import uzhttp.websocket.{Binary, Close, Continuation, Frame, Ping, Pong, Text}
 import uzhttp.{HTTPError, Request, Response}
-import zio.{RIO, UIO, ZIO}
+import zio.{Chunk, Exit, RIO, UIO, ZIO}
 import zio.blocking.Blocking
 import zio.duration.Duration
 import zio.internal.{Platform, Tracing}
-import zio.stream.{Take, Stream}
+import zio.stream.{Stream, ZStream}
+import ZStream.Take
 
 object TestServer extends zio.App {
   private lazy val resourcePath = Paths.get(getClass.getClassLoader.getResource("site").toURI)
@@ -61,12 +62,12 @@ object TestServer extends zio.App {
   private def formatHex(bytes: Array[Byte]) = bytes.map(b => String.format("%02x", Byte.box(b))).mkString
 
   private def handleWebsocketFrame(frame: Frame): UIO[Stream[Nothing, Take[Nothing, Frame]]] = frame match {
-    case frame@Binary(data, _)       => log(s"Binary frame: 0x${formatHex(data)}") as Stream(Take.Value(frame))
-    case frame@Text(data, _)         => log(s"Text frame: $data") as Stream(Take.Value(frame))
-    case frame@Continuation(data, _) => log(s"Continuation frame: 0x${formatHex(data)}") as Stream(Take.Value(frame))
-    case Ping => log("Ping!") as Stream(Take.Value(Pong))
+    case frame@Binary(data, _)       => log(s"Binary frame: 0x${formatHex(data)}") as Stream(Exit.succeed(Chunk(frame)))
+    case frame@Text(data, _)         => log(s"Text frame: $data") as Stream(Exit.succeed(Chunk(frame)))
+    case frame@Continuation(data, _) => log(s"Continuation frame: 0x${formatHex(data)}") as Stream(Exit.succeed(Chunk(frame)))
+    case Ping => log("Ping!") as Stream(Exit.succeed(Chunk(Pong)))
     case Pong => log("Pong!") as Stream.empty
-    case Close => log("Close") as Stream(Take.Value(Close), Take.End)
+    case Close => log("Close") as Stream(Exit.succeed(Chunk(Close)), Take.End)
   }
 
   override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] =
@@ -76,7 +77,7 @@ object TestServer extends zio.App {
           .handleSome {
             case req @ Request.WebsocketRequest(_, uri, _, _, inputFrames) if uri.getPath startsWith "/ws" =>
               for {
-                ws    <- Response.websocket(req, Stream.flatten(inputFrames.mapM(handleWebsocketFrame)).unTake)
+                ws <- Response.websocket(req, inputFrames.mapM(handleWebsocketFrame).flatMap(_.collectWhileSuccess.flattenChunks))
               } yield ws
           }
         .handleSome(cache)

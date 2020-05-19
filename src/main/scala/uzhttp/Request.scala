@@ -5,8 +5,8 @@ import java.net.URI
 import uzhttp.header.Headers
 import uzhttp.websocket.Frame
 import uzhttp.HTTPError.BadRequest
-import zio.stream.{Stream, StreamChunk, Take, ZStream}
-import zio.{Chunk, Queue, Ref, UIO, ZIO}
+import zio.stream.{Stream, ZStream}, ZStream.Take
+import zio.{Chunk, Exit, Queue, Ref, UIO, ZIO}
 
 
 trait Request {
@@ -14,7 +14,7 @@ trait Request {
   def uri: URI
   def version: Version
   def headers: Map[String, String]
-  def body: Option[StreamChunk[HTTPError, Byte]]
+  def body: Option[Stream[HTTPError, Byte]]
   def addHeader(name: String, value: String): Request
   def addHeaders(headers: (String, String)*): Request = headers.foldLeft(this) {
     case (r, (k, v)) => r.addHeader(k, v)
@@ -58,14 +58,14 @@ object Request {
     case object PATCH extends Method("PATCH")
   }
 
-  private[uzhttp] final case class ReceivingBody(method: Method, uri: URI, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Chunk[Byte]]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
-    override val body: Option[StreamChunk[HTTPError, Byte]] = Some(StreamChunk(Stream.fromQueue(bodyQueue).unTake))
+  private[uzhttp] final case class ReceivingBody(method: Method, uri: URI, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Byte]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
+    override val body: Option[Stream[HTTPError, Byte]] = Some(Stream.fromQueue(bodyQueue).collectWhileSuccess.flattenChunks)
     override val noBufferInput: Boolean = false
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
     override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
     override def bytesRemaining: UIO[Long] = received.get.map(contentLength - _)
     override def channelClosed(): UIO[Unit] = bodyQueue.offer(Take.End).unit
-    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Take.Value(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
+    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Exit.succeed(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
       case received if received >= contentLength => bodyQueue.offer(Take.End).unit
       case _ => ZIO.unit
     }
@@ -73,19 +73,19 @@ object Request {
 
   private[uzhttp] object ReceivingBody {
     private[uzhttp] def create(method: Method, uri: URI, version: Version, headers: Headers, contentLength: Long): UIO[ReceivingBody] =
-      ZIO.mapN(Queue.unbounded[Take[HTTPError, Chunk[Byte]]], Ref.make[Long](0L)) {
+      ZIO.mapN(Queue.unbounded[Take[HTTPError, Byte]], Ref.make[Long](0L)) {
         (body, received) => new ReceivingBody(method, uri, version, headers, body, received, contentLength)
       }
   }
 
   private final case class ConstBody(method: Method, uri: URI, version: Version, headers: Headers, bodyChunk: Chunk[Byte]) extends Request {
-    override def body: Option[StreamChunk[Nothing, Byte]] = Some(StreamChunk(Stream(bodyChunk)))
+    override def body: Option[Stream[Nothing, Byte]] = Some(Stream.fromChunk(bodyChunk))
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
     override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
   }
 
   private[uzhttp] final case class NoBody(method: Method, uri: URI, version: Version, headers: Headers) extends Request {
-    override val body: Option[StreamChunk[Nothing, Byte]] = None
+    override val body: Option[Stream[Nothing, Byte]] = None
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
     override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
   }
@@ -113,21 +113,21 @@ object Request {
     val uri: URI,
     val version: Version,
     val headers: Headers,
-    chunks: Queue[Take[Nothing, Chunk[Byte]]]
+    chunks: Queue[Take[Nothing, Byte]]
   ) extends ContinuingRequest {
     override def addHeader(name: String, value: String): Request = new WebsocketRequest(method, uri, version, headers + (name -> value), chunks)
     override def removeHeader(name: String): Request = new WebsocketRequest(method, uri, version, headers = headers.removed(name), chunks)
-    override val body: Option[StreamChunk[HTTPError, Byte]] = None
+    override val body: Option[Stream[HTTPError, Byte]] = None
     override val bytesRemaining: UIO[Long] = ZIO.succeed(Long.MaxValue)
-    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Take.Value(chunk)).unit
+    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Exit.succeed(chunk)).unit
     override def channelClosed(): UIO[Unit] = chunks.offer(Take.End).unit
     override val noBufferInput: Boolean = true
-    lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueue(chunks).unTake)
+    lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueue(chunks).collectWhileSuccess.flattenChunks)
   }
 
   object WebsocketRequest {
     def apply(method: Method, uri: URI, version: Version, headers: Headers): UIO[WebsocketRequest] =
-      Queue.unbounded[Take[Nothing, Chunk[Byte]]].map {
+      Queue.unbounded[Take[Nothing, Byte]].map {
         chunks => new WebsocketRequest(method, uri, version, headers, chunks)
       }
 

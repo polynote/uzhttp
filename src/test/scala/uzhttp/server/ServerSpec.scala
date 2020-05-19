@@ -4,7 +4,7 @@ import java.net.InetSocketAddress
 import java.security.MessageDigest
 
 import zio.{Chunk, Queue, Ref, Task, ZIO}
-import zio.stream.{Sink, Stream, Take}
+import zio.stream.{Sink, Stream, ZStream}, ZStream.Take
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.freespec.AnyFreeSpec
 import org.scalatest.matchers.must.Matchers
@@ -28,7 +28,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           Queue.unbounded[Take[Throwable, websocket.Frame]].flatMap {
             output => Response.websocket(
               req,
-              Stream.fromQueue(output).unTake
+              Stream.fromQueue(output).collectWhileSuccess.flattenChunks
             ).tap {
               socket =>
                 frames.map {
@@ -45,10 +45,10 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           if (req.headers.get("Content-Length").map(_.toInt).exists(_ > 0)) {
             req.body match {
               case Some(body) =>
-                body.chunks.runCollect.map {
+                body.runCollect.map {
                   bytes =>
                     Response.const(
-                      Chunk.fromIterable(bytes).flatten.toArray,
+                      Chunk.fromIterable(bytes).toArray,
                       headers = req.headers.toList.map {
                         case (name, value) => s"x-echoed-$name" -> value
                       } ++ List("x-echoed-request-uri" -> req.uri.getPath, "x-echoed-method" -> req.method.name, "Content-Type" -> "application/octet-stream")
