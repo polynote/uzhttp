@@ -3,9 +3,12 @@ package uzhttp.websocket
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
-import zio.{Chunk, ZIO}
-import zio.stream.{Sink, Stream, Take, ZSink, ZStream}
+import zio.{Chunk, Ref, ZIO, ZManaged}
+import zio.stream.{Sink, Stream, ZSink, ZStream, ZTransducer}
+import ZStream.Take
 import Frame.frameBytes
+
+import scala.annotation.tailrec
 
 sealed trait Frame {
   def toBytes: ByteBuffer
@@ -23,97 +26,156 @@ object Frame {
     case _ => throw new IllegalArgumentException("Invalid frame opcode")
   }
 
-  case class FrameHeader(fin: Boolean, opcode: Byte, mask: Boolean, lengthIndicator: Byte)
 
-  private abstract class ArrayReaderSink[T](numBytes: Int) extends ZSink[Any, NotEnoughBytes.type, Chunk[Byte], Chunk[Byte], T] {
-    override final type State = Chunk[Byte]
-    override final def cont(chunk: Chunk[Byte]): Boolean = chunk.length < numBytes
-    override final def initial: ZIO[Any, Nothing, Chunk[Byte]] = ZIO.succeed(Chunk.empty)
-    override final def step(state: Chunk[Byte], a: Chunk[Byte]): ZIO[Any, Nothing, Chunk[Byte]] = ZIO.succeed(state ++ a)
-    override final def extract(chunk: Chunk[Byte]): ZIO[Any, NotEnoughBytes.type, (T, Chunk[Chunk[Byte]])] =
-      if (chunk.length >= numBytes)
-        ZIO.succeed((parseArray(chunk.take(numBytes).toArray), Chunk(chunk.drop(numBytes))))
-      else ZIO.fail(NotEnoughBytes)
+  final case class FrameHeader(fin: Boolean, opcode: Byte, mask: Boolean, lengthIndicator: Byte)
 
-    def parseArray(arr: Array[Byte]): T
-  }
+  /**
+    * Parsing using mutable state. That's not good, but it is several times faster than the immutable state version.
+    */
+  private object FastParsing {
+    val NeedHeader      = 0
+    val NeedShortLength = 1
+    val NeedLongLength  = 2
+    val NeedMask        = 3
+    val ReceivingBytes  = 4
+    val LengthTooLong   = 5
 
-  private abstract class BufReaderSink[T](numBytes: Int) extends ArrayReaderSink[T](numBytes) {
-    override final def parseArray(arr: Array[Byte]): T = parseBuffer(ByteBuffer.wrap(arr))
-    def parseBuffer(buf: ByteBuffer): T
-  }
+    // this is mutable in order to avoid a lot of allocation during parsing
+    final class State(
+     var parsingState: Int = NeedHeader,
+     var header: FrameHeader = null,
+     var length: Int = -1,
+     var maskKey: Int = 0,
+     var remainder: Chunk[Byte] = Chunk.empty,
+     var parsedFrames: Chunk[Frame] = Chunk.empty
+    ) {
+      val bufArray: Array[Byte] = new Array[Byte](10)
+      val buf: ByteBuffer = ByteBuffer.wrap(bufArray)
+      def reset(): Unit = {
+        this.parsingState = NeedHeader
+        this.header = null
+        this.length = -1
+        this.maskKey = 0
+        ()
+      }
 
-  private object ParseFrameHeader extends BufReaderSink[FrameHeader](2) {
-    override final def parseBuffer(buf: ByteBuffer): FrameHeader = {
-      val b0 = buf.get()
-      val b1 = buf.get()
-      FrameHeader(b0 < 0, (b0 & 0xF).toByte, b1 < 0, (b1 & 127).toByte)
+      def emit(): Chunk[Frame] = {
+        val result = this.parsedFrames
+        this.parsedFrames = Chunk.empty
+        result
+      }
+
+      def emitAndReset(): Chunk[Frame] = {
+        this.reset()
+        this.remainder = Chunk.empty
+        this.emit()
+      }
+    }
+
+    @tailrec def updateState(state: State): Unit = {
+      val bytes = state.remainder
+      state.parsingState match {
+        case NeedHeader if bytes.size >= 2 =>
+          val b0 = bytes.head
+          val b1 = bytes(1)
+          val lengthIndicator = (b1 & 127).toByte
+          val mask = b1 < 0
+          state.header = FrameHeader(b0 < 0, (b0 & 0xF).toByte, mask, lengthIndicator)
+          state.parsingState = lengthIndicator match {
+            case 127 => NeedLongLength
+            case 126 => NeedShortLength
+            case n if mask =>
+              state.length = n
+              state.remainder = state.remainder.drop(2)
+              NeedMask
+            case n =>
+              state.length = n
+              ReceivingBytes
+          }
+          updateState(state)
+        case NeedShortLength if bytes.size >= 4 =>
+          state.bufArray(0) = bytes(2)
+          state.bufArray(1) = bytes(3)
+          state.length = java.lang.Short.toUnsignedInt(state.buf.getShort(0))
+          state.remainder = state.remainder.drop(4)
+          state.parsingState = if (state.header.mask) NeedMask else ReceivingBytes
+          updateState(state)
+        case NeedLongLength if bytes.size >= 10 =>
+          bytes.copyToArray(state.bufArray, 0, 10)
+          val length = state.buf.getLong(2)
+          if (length > Int.MaxValue) {
+            state.parsingState = LengthTooLong
+          } else {
+            state.length = length.toInt
+            state.remainder = state.remainder.drop(10)
+            state.parsingState = if (state.header.mask) NeedMask else ReceivingBytes
+            updateState(state)
+          }
+        case NeedMask if bytes.size >= 4 =>
+          bytes.copyToArray(state.bufArray, 0, 4)
+          state.maskKey = state.buf.getInt(0)
+          state.remainder = state.remainder.drop(4)
+          state.parsingState = ReceivingBytes
+          updateState(state)
+        case ReceivingBytes if bytes.size >= state.length =>
+          val body = bytes.take(state.length).toArray
+          if (state.header.mask && state.maskKey != 0) {
+            applyMask(body, state.maskKey)
+          }
+          state.remainder = state.remainder.drop(state.length)
+          state.parsedFrames = state.parsedFrames + Frame(state.header.fin, state.header.opcode, body)
+          state.reset()
+          updateState(state)
+        case _ =>
+      }
+    }
+
+    val parseFrames: ZTransducer[Any, FrameError, Byte, Frame] = ZTransducer.apply[Any, FrameError, Byte, Frame] {
+      ZManaged.succeed(new State()).map {
+        state =>
+          {
+            case None =>
+              updateState(state)
+              if (state.parsingState == LengthTooLong)
+                ZIO.fail(FrameTooLong(state.buf.getLong(2)))
+              else
+                ZIO.succeed(state.emitAndReset())
+            case Some(chunk) =>
+              state.remainder = state.remainder ++ chunk
+              updateState(state)
+              if (state.parsingState == LengthTooLong)
+                ZIO.fail(FrameTooLong(state.buf.getLong(2)))
+              else
+                ZIO.succeed(state.emit())
+          }
+      }
     }
   }
 
-  private object ParseLongLength extends BufReaderSink[Long](8) {
-    override final def parseBuffer(buf: ByteBuffer): Long = buf.getLong()
+  // mask the given bytes with the given key, mutating the input array
+  private def applyMask(bytes: Array[Byte], maskKey: Int): Unit = {
+    val maskBytes = Array[Byte]((maskKey >> 24).toByte, ((maskKey >> 16) & 0xFF).toByte, ((maskKey >> 8) & 0xFF).toByte, (maskKey & 0xFF).toByte)
+    var i = 0
+    while (i < bytes.length - 4) {
+      bytes(i) = (bytes(i) ^ maskBytes(0)).toByte
+      bytes(i + 1) = (bytes(i + 1) ^ maskBytes(1)).toByte
+      bytes(i + 2) = (bytes(i + 2) ^ maskBytes(2)).toByte
+      bytes(i + 3) = (bytes(i + 3) ^ maskBytes(3)).toByte
+      i += 4
+    }
+
+    while (i < bytes.length) {
+      bytes(i) = (bytes(i) ^ maskBytes(i % 4)).toByte
+      i += 1
+    }
   }
 
-  private object ParseShortLength extends BufReaderSink[Long](2) {
-    override final def parseBuffer(buf: ByteBuffer): Long = java.lang.Short.toUnsignedInt(buf.getShort()).toLong
-  }
+  // Parses websocket frames from the bytestream using the parseFrame transducer
+  private[uzhttp] def parse(stream: Stream[Throwable, Byte]): Stream[Throwable, Frame] = stream.aggregate(FastParsing.parseFrames)
 
-  private object ParseMask extends BufReaderSink[Int](4) {
-    override final def parseBuffer(buf: ByteBuffer): Int = buf.getInt()
-  }
-
-  private class ParseBody(length: Int) extends ArrayReaderSink[Array[Byte]](length) {
-    override final def parseArray(arr: Array[Byte]): Array[Byte] = arr
-  }
-
-  // Parses one frame from a websocket byte stream
-  private val parseFrame: Sink[Throwable, Chunk[Byte], Chunk[Byte], Frame] = ParseFrameHeader.flatMap {
-    case FrameHeader(fin, opcode, mask, lengthIndicator) =>
-      val parseLen = lengthIndicator match {
-        case 127 => ParseLongLength
-        case 126 => ParseShortLength
-        case n   => ZSink.succeed[Chunk[Byte], Long](n.toLong)
-      }
-
-      parseLen.flatMap {
-        case len if len > Int.MaxValue => ZSink.fail(FrameTooLong(len))
-        case len =>
-          val parseMask = if (mask) ParseMask else ZSink.succeed[Chunk[Byte], Int](0)
-          parseMask.flatMap {
-            maskKey => new ParseBody(len.toInt).map {
-              bytes =>
-                if (mask) {
-                  val maskBytes = Array[Byte]((maskKey >> 24).toByte, ((maskKey >> 16) & 0xFF).toByte, ((maskKey >> 8) & 0xFF).toByte, (maskKey & 0xFF).toByte)
-                  var i = 0
-                  while (i < bytes.length - 4) {
-                    bytes(i) = (bytes(i) ^ maskBytes(0)).toByte
-                    bytes(i + 1) = (bytes(i + 1) ^ maskBytes(1)).toByte
-                    bytes(i + 2) = (bytes(i + 2) ^ maskBytes(2)).toByte
-                    bytes(i + 3) = (bytes(i + 3) ^ maskBytes(3)).toByte
-                    i += 4
-                  }
-
-                  while (i < bytes.length) {
-                    bytes(i) = (bytes(i) ^ maskBytes(i % 4)).toByte
-                    i += 1
-                  }
-                }
-                Frame(fin, opcode, bytes)
-            }
-          }
-      }
-  }
-
-  // Parses websocket frames from the bytestream using the parseFrame sink
-  private[uzhttp] def parse(stream: Stream[Throwable, Chunk[Byte]]): Stream[Throwable, Frame] = stream.aggregate(parseFrame).map(Take.Value(_)).catchAll {
-    case NotEnoughBytes => ZStream(Take.End)
-    case err => ZStream.fail(err)
-  }.unTake
-
+  sealed abstract class FrameError(msg: String) extends Throwable(msg)
   // We don't handle frames that are over 2GB, because Java can't handle their length.
-  final case class FrameTooLong(length: Long) extends Throwable(s"Frame length $length exceeds Int.MaxValue")
-  case object NotEnoughBytes extends Throwable("Not enough bytes remaining")
+  final case class FrameTooLong(length: Long) extends FrameError(s"Frame length $length exceeds Int.MaxValue")
 
   private[websocket] def frameSize(payloadLength: Int) =
     if (payloadLength < 126)
