@@ -554,7 +554,7 @@ object Server {
                 close()).someOrFail(()).flatMap {
                 conn =>
                   conn.configureBlocking(false)
-                  Connection(conn, requestHandler, errorHandler, config).tap(register).use(_.awaitShutdown).forkDaemon.unit
+                  Connection(conn, requestHandler, errorHandler, config).tap(register(_).orDie).use(_.awaitShutdown).forkDaemon.unit
               }.forever.ignore
             case key =>
               effect(key.attachment().asInstanceOf[Server.Connection]).flatMap {
