@@ -23,7 +23,7 @@ import uzhttp.websocket.Frame
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking}
 import zio.stream.Stream
-import zio.{Chunk, IO, Promise, RIO, Ref, Task, UIO, URIO, ZIO, ZManaged}
+import zio.{Chunk, IO, Promise, RIO, Ref, UIO, URIO, ZIO, ZManaged}
 
 trait Response {
   def headers: Headers
@@ -82,7 +82,7 @@ object Response {
   private def localPath(uri: URI): URIO[Blocking, Option[Path]] = uri match {
     case uri if uri.getScheme == "file" => effectBlocking(Paths.get(uri)).option
     case uri if uri.getScheme == "jar"  => effect(new URI(uri.getSchemeSpecificPart.takeWhile(_ != '!'))).flatMap(localPath).orElseSucceed(None)
-    case _ => ZIO.succeed(None)
+    case _ => ZIO.none
   }
 
   private def parseModDate(rfc1123: String): IO[Unit, Instant] = effect(ZonedDateTime.parse(rfc1123, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant).orElseFail(())
@@ -428,7 +428,7 @@ object Response {
     def defaultCachedResponse(mmapThreshold: Int = 1 << 20): (Request, Response) => ZIO[Blocking, Unit, Response] =
       (req, rep) => rep match {
         case rep if rep.size >= 0 && rep.size < mmapThreshold => CachedResponse.make(rep)
-        case rep: PathResponse => rep.mmap(req.uri.toString).mapError(_ => ())
+        case rep: PathResponse => rep.mmap(req.uri.toString).orElseFail(())
         case _ => ZIO.fail(())
       }
 

@@ -5,8 +5,8 @@ import java.net.URI
 import uzhttp.header.Headers
 import uzhttp.websocket.Frame
 import uzhttp.HTTPError.BadRequest
-import zio.stream.{Stream, ZStream}, ZStream.Take
-import zio.{Chunk, Exit, Queue, Ref, UIO, ZIO}
+import zio.stream.{Stream, Take, ZStream}
+import zio.{Chunk, Queue, Ref, UIO, ZIO}
 
 
 trait Request {
@@ -59,14 +59,14 @@ object Request {
   }
 
   private[uzhttp] final case class ReceivingBody(method: Method, uri: URI, version: Version, headers: Headers, bodyQueue: Queue[Take[HTTPError, Byte]], received: Ref[Long], contentLength: Long) extends ContinuingRequest {
-    override val body: Option[Stream[HTTPError, Byte]] = Some(Stream.fromQueue(bodyQueue).collectWhileSuccess.flattenChunks)
+    override val body: Option[Stream[HTTPError, Byte]] = Some(Stream.fromQueue(bodyQueue).flattenTake)
     override val noBufferInput: Boolean = false
     override def addHeader(name: String, value: String): Request = copy(headers = headers + (name -> value))
     override def removeHeader(name: String): Request = copy(headers = headers.removed(name))
     override def bytesRemaining: UIO[Long] = received.get.map(contentLength - _)
-    override def channelClosed(): UIO[Unit] = bodyQueue.offer(Take.End).unit
-    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Exit.succeed(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
-      case received if received >= contentLength => bodyQueue.offer(Take.End).unit
+    override def channelClosed(): UIO[Unit] = bodyQueue.offer(Take.end).unit
+    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = bodyQueue.offer(Take.chunk(chunk)) *> received.updateAndGet(_ + chunk.length).flatMap {
+      case received if received >= contentLength => bodyQueue.offer(Take.end).unit
       case _ => ZIO.unit
     }
   }
@@ -119,10 +119,10 @@ object Request {
     override def removeHeader(name: String): Request = new WebsocketRequest(method, uri, version, headers = headers.removed(name), chunks)
     override val body: Option[Stream[HTTPError, Byte]] = None
     override val bytesRemaining: UIO[Long] = ZIO.succeed(Long.MaxValue)
-    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Exit.succeed(chunk)).unit
-    override def channelClosed(): UIO[Unit] = chunks.offer(Take.End).unit
+    override def submitBytes(chunk: Chunk[Byte]): UIO[Unit] = chunks.offer(Take.chunk(chunk)).unit
+    override def channelClosed(): UIO[Unit] = chunks.offer(Take.end).unit
     override val noBufferInput: Boolean = true
-    lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueue(chunks).collectWhileSuccess.flattenChunks)
+    lazy val frames: Stream[Throwable, Frame] = Frame.parse(ZStream.fromQueue(chunks).flattenTake)
   }
 
   object WebsocketRequest {
