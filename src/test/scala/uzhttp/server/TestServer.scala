@@ -6,12 +6,11 @@ import java.util.concurrent.TimeUnit
 
 import uzhttp.websocket.{Binary, Close, Continuation, Frame, Ping, Pong, Text}
 import uzhttp.{HTTPError, Request, Response}
-import zio.{Chunk, Exit, RIO, UIO, ZIO}
+import zio.{Chunk, Exit, ExitCode, RIO, UIO, ZIO}
 import zio.blocking.Blocking
 import zio.duration.Duration
 import zio.internal.{Platform, Tracing}
-import zio.stream.{Stream, ZStream}
-import ZStream.Take
+import zio.stream.{Stream, Take, ZStream}
 
 object TestServer extends zio.App {
   private lazy val resourcePath = Paths.get(getClass.getClassLoader.getResource("site").toURI)
@@ -62,22 +61,22 @@ object TestServer extends zio.App {
   private def formatHex(bytes: Array[Byte]) = bytes.map(b => String.format("%02x", Byte.box(b))).mkString
 
   private def handleWebsocketFrame(frame: Frame): UIO[Stream[Nothing, Take[Nothing, Frame]]] = frame match {
-    case frame@Binary(data, _)       => log(s"Binary frame: 0x${formatHex(data)}") as Stream(Exit.succeed(Chunk(frame)))
-    case frame@Text(data, _)         => log(s"Text frame: $data") as Stream(Exit.succeed(Chunk(frame)))
-    case frame@Continuation(data, _) => log(s"Continuation frame: 0x${formatHex(data)}") as Stream(Exit.succeed(Chunk(frame)))
-    case Ping => log("Ping!") as Stream(Exit.succeed(Chunk(Pong)))
+    case frame@Binary(data, _)       => log(s"Binary frame: 0x${formatHex(data)}") as Stream(Take.single(frame))
+    case frame@Text(data, _)         => log(s"Text frame: $data") as Stream(Take.single(frame))
+    case frame@Continuation(data, _) => log(s"Continuation frame: 0x${formatHex(data)}") as Stream(Take.single(frame))
+    case Ping => log("Ping!") as Stream(Take.single(Pong))
     case Pong => log("Pong!") as Stream.empty
-    case Close => log("Close") as Stream(Exit.succeed(Chunk(Close)), Take.End)
+    case Close => log("Close") as Stream(Take.single(Close), Take.end)
   }
 
-  override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, Int] =
+  override def run(args: List[String]): ZIO[zio.ZEnv, Nothing, ExitCode] =
     responseCache(args).use {
       cache =>
         Server.builder(new InetSocketAddress("127.0.0.1", 9121))
           .handleSome {
             case req @ Request.WebsocketRequest(_, uri, _, _, inputFrames) if uri.getPath startsWith "/ws" =>
               for {
-                ws <- Response.websocket(req, inputFrames.mapM(handleWebsocketFrame).flatMap(_.collectWhileSuccess.flattenChunks))
+                ws <- Response.websocket(req, inputFrames.mapM(handleWebsocketFrame).flatMap(_.flattenTake))
               } yield ws
           }
         .handleSome(cache)
@@ -86,7 +85,7 @@ object TestServer extends zio.App {
         .withLogger(ServerLogger.Debug)
         //.withConnectionIdleTimeout(Duration(5, TimeUnit.SECONDS))
         .serve.use {
-          server => server.awaitShutdown.as(0)
+          server => server.awaitShutdown.as(ExitCode.success)
         }.orDie
     }
 }

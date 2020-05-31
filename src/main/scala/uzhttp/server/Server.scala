@@ -192,7 +192,7 @@ object Server {
     def serve: ZManaged[R with Blocking with Clock, Throwable, Server] =
       ZManaged.environment[R].flatMap {
         R => build
-          .flatMap(server => server.serve().forkManaged.as(server))
+          .tap(_.serve().forkManaged)
           .provideSomeLayer[R with Blocking with Clock](ZLayer.succeed(logger.provide(R)))
       }
 
@@ -479,10 +479,8 @@ object Server {
       case Duration.Infinity => ZIO.unit
       case duration =>
         val timeoutClose = ZIO.when(channel.isOpen) {
-          ZIO.sleep(duration).flatMap {
-            _ => Logging.debug(s"Closing connection $this due to idle timeout (${config.connectionIdleTimeout.render})") *>
-              close()
-          }
+          (Logging.debug(s"Closing connection $this due to idle timeout (${config.connectionIdleTimeout.render})") *>
+            close()).delay(duration)
         }
 
         locks.timeoutLock.withPermit {
@@ -552,25 +550,16 @@ object Server {
         keys =>
           ZIO.foreachPar_(keys) {
             case ConnectKey =>
-              effect(Option(serverSocket.accept())).catchAll {
-                err =>
-                  Logging.error("Error accepting connection; server socket is closed", err) *>
-                    close() *>
-                    ZIO.fail(())
-              }.someOrFail(()).flatMap {
+              effect(Option(serverSocket.accept())).tapError(err => Logging.error("Error accepting connection; server socket is closed", err) *>
+                close()).someOrFail(()).flatMap {
                 conn =>
                   conn.configureBlocking(false)
-                  Connection(conn, requestHandler, errorHandler, config).flatMap {
-                    conn =>
-                      register(conn).orDie.as(conn)
-                  }.use(_.awaitShutdown).forkDaemon.unit
-              }.forever.catchAll {
-                _ => ZIO.unit
-              }
+                  Connection(conn, requestHandler, errorHandler, config).tap(register(_).orDie).use(_.awaitShutdown).forkDaemon.unit
+              }.forever.ignore
             case key =>
               effect(key.attachment().asInstanceOf[Server.Connection]).flatMap {
                 conn => conn.doRead.catchAll {
-                  err => Logging.debugError(s"Error reading from connection", err) *> conn.close().forkDaemon.unit
+                  err => Logging.debugError(s"Error reading from connection", err) <* conn.close().forkDaemon
                 }
               }
           }
