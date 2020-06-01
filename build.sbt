@@ -1,11 +1,11 @@
 
 organization := "org.polynote"
 name := "uzhttp"
-version := "0.2.2"
+version := "0.2.3"
 scalaVersion := "2.11.12"
 crossScalaVersions := Seq("2.11.12", "2.12.10", "2.13.1")
 
-val zioVersion = "1.0.0-RC19-2"
+val zioVersion = "1.0.0-RC20"
 
 libraryDependencies := Seq(
   "dev.zio" %% "zio" % zioVersion,
