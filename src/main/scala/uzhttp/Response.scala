@@ -85,17 +85,17 @@ object Response {
     case _ => ZIO.none
   }
 
-  private def parseModDate(rfc1123: String): IO[Unit, Instant] = effect(ZonedDateTime.parse(rfc1123, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant).orElseFail(())
-  private def parseModDateOpt(rfc1123: Option[String]): IO[Unit, Instant] =
-    ZIO.fromOption(rfc1123).flatMap(str => effect(ZonedDateTime.parse(str, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant).orElseFail(()))
+  private def parseModDate(rfc1123: String): IO[Option[Nothing], Instant] = effect(ZonedDateTime.parse(rfc1123, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant).orElseFail(None)
+  private def parseModDateOpt(rfc1123: Option[String]): IO[Option[Nothing], Instant] =
+    ZIO.fromOption(rfc1123).flatMap(str => effect(ZonedDateTime.parse(str, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant).orElseFail(None))
 
-  private def checkModifiedSince(path: Path, ifModifiedSince: Option[String]): ZIO[Blocking, Unit, Response] = ZIO.fromOption {
+  private def checkModifiedSince(path: Path, ifModifiedSince: Option[String]): ZIO[Blocking, Option[Nothing], Response] = ZIO.fromOption {
     ifModifiedSince.map {
       dateStr =>
         parseModDate(dateStr).flatMap {
           ifModifiedSinceInstant =>
-            getModifiedTime(path).orElseFail(()).flatMap {
-              case mtime if mtime.isAfter(ifModifiedSinceInstant) => ZIO.fail(())
+            getModifiedTime(path).orElseFail(None).flatMap {
+              case mtime if mtime.isAfter(ifModifiedSinceInstant) => ZIO.fail(None)
               case _ => ZIO.succeed(notModified)
             }
         }
@@ -415,7 +415,7 @@ object Response {
         case promise => promise.await.flatMap {
           response =>
               ZIO.mapN(parseModDateOpt(response.headers.get(LastModified)), parseModDateOpt(request.headers.get(IfModifiedSince)))(_ isBefore _)
-                .filterOrFail(_ == false)(())
+                .filterOrFail(_ == false)(None)
                 .as(notModified)
                 .orElseSucceed(response)
           }

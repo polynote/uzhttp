@@ -123,7 +123,7 @@ object Frame {
             applyMask(body, state.maskKey)
           }
           state.remainder = state.remainder.drop(state.length)
-          state.parsedFrames = state.parsedFrames + Frame(state.header.fin, state.header.opcode, body)
+          state.parsedFrames = state.parsedFrames :+ Frame(state.header.fin, state.header.opcode, body)
           state.reset()
           updateState(state)
         case _ =>
