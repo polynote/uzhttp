@@ -3,7 +3,7 @@ package uzhttp.server
 import uzhttp.{Request, Response}
 import zio.{UIO, ZIO}
 import zio.ZIO.effectTotal
-import zio.duration.Duration
+import zio.duration._
 
 case class ServerLogger[-R](
   info: (=> String) => ZIO[R, Nothing, Unit],
