@@ -13,7 +13,7 @@ import uzhttp.HTTPError.{BadRequest, NotFound, RequestTimeout}
 import zio.ZIO.{effect, effectTotal}
 import zio.blocking.{Blocking, effectBlocking, effectBlockingCancelable}
 import zio.clock.Clock
-import zio.duration.Duration
+import zio.duration._
 import zio.stream.{Sink, Stream}
 import zio.{Chunk, Fiber, Has, IO, Promise, RIO, Ref, Schedule, Semaphore, Task, UIO, URIO, ZIO, ZLayer, ZManaged}
 
@@ -34,7 +34,7 @@ class Server private (
   /**
     * @return A task which will complete when the server's socket channel is open.
     */
-  def awaitUp: Task[Unit] = effect(channel.isOpen).doUntil(identity).unit
+  def awaitUp: Task[Unit] = effect(channel.isOpen).repeatUntil(identity).unit
 
   def uri: UIO[Option[URI]] = localAddress.map {
     case inet: InetSocketAddress => Some(new URI("http", null, inet.getHostName, inet.getPort, "/", null, null))
@@ -200,7 +200,7 @@ object Server {
 
   private[uzhttp] trait ConnectionWriter {
     def withWriteLock[R, E](fn: WritableByteChannel => ZIO[R, E, Unit]): ZIO[R, E, Unit]
-    private def writeInternal(channel: WritableByteChannel, bytes: ByteBuffer): Task[Unit] = effect(channel.write(bytes)).as(bytes).doWhile(_.hasRemaining).unit
+    private def writeInternal(channel: WritableByteChannel, bytes: ByteBuffer): Task[Unit] = effect(channel.write(bytes)).as(bytes).repeatWhile(_.hasRemaining).unit
     def write(bytes: ByteBuffer): Task[Unit] = withWriteLock(channel => writeInternal(channel, bytes))
     def write(bytes: Array[Byte]): Task[Unit] = write(ByteBuffer.wrap(bytes))
     def writeByteBuffers(buffers: Stream[Throwable, ByteBuffer]): Task[Unit] = withWriteLock(channel => buffers.foreach(buf => writeInternal(channel, buf)))

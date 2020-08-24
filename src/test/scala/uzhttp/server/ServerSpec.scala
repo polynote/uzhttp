@@ -72,7 +72,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
       managed.tapM(server => runningServerRef.set(Some(server))).useForever.forkDaemon
   }
 
-  private val runningServer: Server = unsafeRun(runningServerRef.get.doUntil(_.nonEmpty).flatMap(server => server.get.awaitUp.as(server.get)))
+  private val runningServer: Server = unsafeRun(runningServerRef.get.repeatUntil(_.nonEmpty).flatMap(server => server.get.awaitUp.as(server.get)))
 
   private val port = unsafeRun(runningServer.localAddress).asInstanceOf[InetSocketAddress].getPort
 
