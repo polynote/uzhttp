@@ -1,11 +1,11 @@
 
 organization := "org.polynote"
 name := "uzhttp"
-version := "0.2.4"
+version := "0.2.5-SNAPSHOT"
 scalaVersion := "2.11.12"
-crossScalaVersions := Seq("2.11.12", "2.12.10", "2.13.1")
+crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.3")
 
-val zioVersion = "1.0.0"
+val zioVersion = "1.0.1"
 
 libraryDependencies := Seq(
   "dev.zio" %% "zio" % zioVersion,
@@ -16,8 +16,8 @@ libraryDependencies := Seq(
   "dev.zio" %% "zio-test-sbt"      % zioVersion % "test",
 
   // http client for testing
-  "com.softwaremill.sttp.client" %% "core" % "2.0.3" % "test",
-  "com.softwaremill.sttp.client" %% "async-http-client-backend-zio" % "2.0.3" % "test"
+  "com.softwaremill.sttp.client" %% "core" % "2.2.5" % "test",
+  "com.softwaremill.sttp.client" %% "async-http-client-backend-zio" % "2.2.5" % "test"
 )
 
 testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
