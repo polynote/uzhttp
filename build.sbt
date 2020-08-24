@@ -1,7 +1,7 @@
 
 organization := "org.polynote"
 name := "uzhttp"
-version := "0.2.5-SNAPSHOT"
+version := "0.2.5"
 scalaVersion := "2.11.12"
 crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.3")
 
