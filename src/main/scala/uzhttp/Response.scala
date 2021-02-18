@@ -247,7 +247,7 @@ object Response {
     override def addHeaders(headers: (String, String)*): ByteStreamResponse = copy(headers = this.headers ++ headers)
     override def removeHeader(name: String): Response = copy(headers = headers.removed(name))
     override private[uzhttp] def writeTo(connection: Server.ConnectionWriter): ZIO[Blocking, Throwable, Unit] =
-      connection.writeByteArrays(body)
+      connection.writeByteArrays(Stream(Response.headerBytes(this)).concat(body))
   }
 
   private final case class ConstResponse private[uzhttp] (
