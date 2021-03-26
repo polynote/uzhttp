@@ -100,6 +100,8 @@ object Request {
             method  <- Method.parseEither(methodStr)
             version <- Version.parseEither(versionStr)
           } yield NoBody(method, uri, version, Headers.fromLines(rest))
+          
+          case _ => Left(BadRequest("Malformed request header"))
         }
     }
   }
