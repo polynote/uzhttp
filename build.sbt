@@ -5,7 +5,7 @@ version := "0.2.6"
 scalaVersion := "2.11.12"
 crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.3")
 
-val zioVersion = "1.0.2"
+val zioVersion = "1.0.3"
 
 libraryDependencies := Seq(
   "dev.zio" %% "zio" % zioVersion,
