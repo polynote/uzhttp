@@ -1,33 +1,40 @@
 
 organization := "org.polynote"
 name := "uzhttp"
-version := "0.2.7"
-scalaVersion := "2.11.12"
-crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.3")
+version := "0.2.8" 
+scalaVersion := "3.0.1"
+crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.6", "3.0.1")
 
-val zioVersion = "1.0.3"
+val zioVersion = "1.0.11"
+val sttpClientVersion = "3.3.13"
+val scalaTestVersion = "3.2.9"
 
 libraryDependencies := Seq(
   "dev.zio" %% "zio" % zioVersion,
   "dev.zio" %% "zio-streams" % zioVersion,
-  "org.scalatest" %% "scalatest" % "3.1.0" % "test",
+  "org.scalatest" %% "scalatest" % scalaTestVersion % "test",
 
   "dev.zio" %% "zio-test"          % zioVersion % "test",
   "dev.zio" %% "zio-test-sbt"      % zioVersion % "test",
 
   // http client for testing
-  "com.softwaremill.sttp.client" %% "core" % "2.2.5" % "test",
-  "com.softwaremill.sttp.client" %% "async-http-client-backend-zio" % "2.2.5" % "test"
+  "com.softwaremill.sttp.client3" %% "core" % sttpClientVersion % "test",
+  "com.softwaremill.sttp.client3" %% "async-http-client-backend-zio" % sttpClientVersion % "test"
 )
 
 testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
 
-scalacOptions ++= Seq(
-  "-deprecation",
-  "-feature",
-  "-Ywarn-value-discard",
-  "-Xfatal-warnings"
-)
+scalacOptions ++= {
+    if (scalaVersion.value != "3.0.1")
+       Seq( "-deprecation",
+        "-feature",
+        "-Ywarn-value-discard",
+        "-Xfatal-warnings")
+    else 
+      Seq( "-deprecation",
+        "-feature",
+        "-Xfatal-warnings")
+} 
 
 // publishing settings
 publishMavenStyle := true
