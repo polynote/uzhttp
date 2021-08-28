@@ -21,6 +21,9 @@ import sttp.client3.impl.zio.ZioWebSockets
 import sttp.monad.syntax.MonadErrorOps
 import sttp.ws.WebSocketFrame
 import sttp.client3.asynchttpclient.zio._
+import sttp.ws.WebSocket
+import sttp.capabilities.zio.ZioStreams
+import org.scalatest.compatible.Assertion
 
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
@@ -208,7 +211,8 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           basicRequest
             .get(uri"ws://localhost:$port/websocketTest")
             .response(
-              asWebSocketAlways(ws =>
+              //asWebSocketAlways((ws: WebSocket[[_] =>> zio.RIO[Any, _]]) =>
+              asWebSocketAlways[Task, Assertion](ws =>
                 for {
                   _ <- ws.send(WebSocketFrame.binary(smallBinaryData))
                   small1 <- errOnClose(ws.receiveBinary(true))
@@ -240,12 +244,12 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
                 }
               )
             )
-        ).provideCustomLayer(
+        ).provideLayer(
           AsyncHttpClientZioBackend.layerUsingConfigBuilder(builder =>
             builder
               .setWebSocketMaxFrameSize(Int.MaxValue)
               .setWebSocketMaxBufferSize(8192)
-          )
+          ) +!+ zio.ZEnv.live
         )
       }
     }
