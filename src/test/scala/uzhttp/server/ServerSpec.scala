@@ -211,7 +211,6 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           basicRequest
             .get(uri"ws://localhost:$port/websocketTest")
             .response(
-              //asWebSocketAlways((ws: WebSocket[[_] =>> zio.RIO[Any, _]]) =>
               asWebSocketAlways[Task, Assertion](ws =>
                 for {
                   _ <- ws.send(WebSocketFrame.binary(smallBinaryData))
