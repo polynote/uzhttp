@@ -238,7 +238,7 @@ object Response {
     (statusLine + headers + "\r\n").getBytes(StandardCharsets.US_ASCII)
   }
 
-  private final case class ByteStreamResponse private[uzhttp](
+  private final case class ByteStreamResponse (
     status: Status,
     size: Long,
     body: Stream[Nothing, Array[Byte]],
@@ -250,7 +250,7 @@ object Response {
       connection.writeByteArrays(Stream(Response.headerBytes(this)).concat(body))
   }
 
-  private final case class ConstResponse private[uzhttp] (
+  private final case class ConstResponse (
     status: Status,
     body: Array[Byte],
     headers: Headers
@@ -303,7 +303,7 @@ object Response {
     }
   }
 
-  private final case class MappedPathResponse private[uzhttp] (
+  private final case class MappedPathResponse (
     status: Status, size: Long, headers: Headers,
     mappedBuf: MappedByteBuffer
   ) extends Response {
@@ -313,7 +313,7 @@ object Response {
       connection.writeByteBuffers(Stream(ByteBuffer.wrap(headerBytes(this)), mappedBuf.duplicate()))
   }
 
-  private final case class InputStreamResponse private[uzhttp](
+  private final case class InputStreamResponse (
     status: Status,
     getInputStream: ZManaged[Blocking, Throwable, InputStream],
     size: Long,
