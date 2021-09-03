@@ -2,8 +2,9 @@
 organization := "org.polynote"
 name := "uzhttp"
 version := "0.2.8" 
-scalaVersion := "3.0.1"
+scalaVersion := "2.11.12"
 crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.6", "3.0.1")
+ThisBuild / versionScheme := Some("early-semver")
 
 val zioVersion = "1.0.11"
 val sttpClientVersion = "3.3.13"
