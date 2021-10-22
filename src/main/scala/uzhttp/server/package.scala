@@ -2,19 +2,29 @@ package uzhttp
 
 import java.nio.channels.SelectionKey
 
-import zio.duration.Duration
-import zio.{Has, URIO, ZIO}
+import zio._
 
 package object server {
 
   type Logging = Has[ServerLogger[Any]]
 
   object Logging {
-    def info(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].info(str))
-    def request(req: Request, rep: Response, startDuration: Duration, finishDuration: Duration): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].request(req, rep, startDuration, finishDuration))
-    def debug(str: => String): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].debug(str))
-    def error(str: String, err: Throwable): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].error(str, err))
-    def debugError(str: String, err: Throwable): URIO[Logging, Unit] = ZIO.accessM[Logging](_.get[ServerLogger[Any]].debugError(str, err))
+    def info(str: => String): URIO[Logging, Unit] =
+      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].info(str))
+    def request(
+        req: Request,
+        rep: Response,
+        startDuration: Duration,
+        finishDuration: Duration
+    ): URIO[Logging, Unit] = ZIO.accessZIO[Logging](
+      _.get[ServerLogger[Any]].request(req, rep, startDuration, finishDuration)
+    )
+    def debug(str: => String): URIO[Logging, Unit] =
+      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].debug(str))
+    def error(str: String, err: Throwable): URIO[Logging, Unit] =
+      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].error(str, err))
+    def debugError(str: String, err: Throwable): URIO[Logging, Unit] =
+      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].debugError(str, err))
   }
 
   private[server] val EmptyLine: Array[Byte] = CRLF ++ CRLF
@@ -34,7 +44,9 @@ package object server {
     "%s%.1f TB".format(s, b / 1e3)
   }
 
-  private[server] implicit class IterateKeys(val self: java.util.Set[SelectionKey]) extends AnyVal {
+  private[server] implicit class IterateKeys(
+      val self: java.util.Set[SelectionKey]
+  ) extends AnyVal {
     def toIterable: Iterable[SelectionKey] = new Iterable[SelectionKey] {
       override def iterator: Iterator[SelectionKey] = {
         val jIterator = self.iterator()
