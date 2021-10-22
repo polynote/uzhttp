@@ -6,7 +6,7 @@ crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.6", "3.0.1")
 ThisBuild / versionScheme := Some("early-semver")
 
 val zioVersion = "2.0.0-M4+21-503ceef7-SNAPSHOT"
-val sttpClientVersion = "3.3.13"
+val sttpClientVersion = "3.3.16"
 val scalaTestVersion = "3.2.9"
 
 libraryDependencies := Seq(
@@ -18,7 +18,7 @@ libraryDependencies := Seq(
 
   // http client for testing
   "com.softwaremill.sttp.client3" %% "core" % sttpClientVersion % "test",
-  "com.softwaremill.sttp.client3" %% "async-http-client-backend-zio" % sttpClientVersion % "test"
+  "com.softwaremill.sttp.client3" %% "async-http-client-backend-future" % sttpClientVersion % "test"
 )
 
 testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")

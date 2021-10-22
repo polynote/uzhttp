@@ -20,20 +20,29 @@ import ZIO.effect
 import org.scalatest.Assertion
 import uzhttp.{Request, Response, Version}
 import uzhttp.header.Headers, Headers.{ContentLength, ContentType, LastModified}
-import zio.blocking.Blocking
 
 class ResponseSpec extends AnyFreeSpec with Matchers {
   import TestRuntime.runtime.unsafeRun
 
-
   private def splitRequest(req: Chunk[Byte]) = {
     val arr = req.toArray
     val splitPoint = arr.indexOfSlice(Seq('\r', '\n', '\r', '\n'))
-    val headerLines = new String(arr, 0, splitPoint, StandardCharsets.US_ASCII).linesWithSeparators.map(_.stripLineEnd).toList
-    (headerLines.head, Headers.fromLines(headerLines.tail), req.drop(splitPoint + 4))
+    val headerLines = new String(
+      arr,
+      0,
+      splitPoint,
+      StandardCharsets.US_ASCII
+    ).linesWithSeparators.map(_.stripLineEnd).toList
+    (
+      headerLines.head,
+      Headers.fromLines(headerLines.tail),
+      req.drop(splitPoint + 4)
+    )
   }
 
-  private def verify(rep: Response)(fn: (String, Headers, Chunk[Byte]) => Assertion): Assertion = {
+  private def verify(
+      rep: Response
+  )(fn: (String, Headers, Chunk[Byte]) => Assertion): Assertion = {
     val conn = MockConnectionWriter()
     unsafeRun(rep.writeTo(conn))
     val (status, headers, body) = splitRequest(unsafeRun(conn.writtenBytes.get))
@@ -41,11 +50,14 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
   }
 
   private val toInstant: TemporalQuery[Instant] = new TemporalQuery[Instant] {
-    override def queryFrom(temporal: TemporalAccessor): Instant = Instant.from(temporal)
+    override def queryFrom(temporal: TemporalAccessor): Instant =
+      Instant.from(temporal)
   }
 
-  private def timeStr(inst: Instant): String = DateTimeFormatter.RFC_1123_DATE_TIME.format(inst.atZone(ZoneOffset.UTC))
-  private def parseTime(str: String): Instant = DateTimeFormatter.RFC_1123_DATE_TIME.parse(str, toInstant)
+  private def timeStr(inst: Instant): String =
+    DateTimeFormatter.RFC_1123_DATE_TIME.format(inst.atZone(ZoneOffset.UTC))
+  private def parseTime(str: String): Instant =
+    DateTimeFormatter.RFC_1123_DATE_TIME.parse(str, toInstant)
   private def trunc(inst: Instant): Instant = parseTime(timeStr(inst))
   private val currentTimeStr: String = timeStr(Instant.now())
 
@@ -63,41 +75,72 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
   }
 
   "Path response" - {
-    val path = Paths.get(getClass.getClassLoader.getResource("path-test.txt").toURI)
+    val path =
+      Paths.get(getClass.getClassLoader.getResource("path-test.txt").toURI)
     val modified = Files.getLastModifiedTime(path).toInstant
     val expected = Files.readAllBytes(path)
 
-    val req = Request.NoBody(Request.Method.GET, new URI("/path-test.txt"), Version.Http11, Headers.empty)
+    val req = Request.NoBody(
+      Request.Method.GET,
+      new URI("/path-test.txt"),
+      Version.Http11,
+      Headers.empty
+    )
 
     "writes to connection" in {
-      verify(unsafeRun(Response.fromPath(path, req, contentType = "text/plain", headers = List("Flerg" -> "Blerg")))) {
-        (status, headers, body) =>
-          status mustEqual "HTTP/1.1 200 OK"
-          headers("Flerg") mustEqual "Blerg"
-          headers(ContentLength) mustEqual expected.length.toString
-          headers(ContentType) mustEqual "text/plain"
-          parseTime(headers(LastModified)) mustEqual trunc(modified)
-          body.toArray must contain theSameElementsInOrderAs expected
+      verify(
+        unsafeRun(
+          Response.fromPath(
+            path,
+            req,
+            contentType = "text/plain",
+            headers = List("Flerg" -> "Blerg")
+          )
+        )
+      ) { (status, headers, body) =>
+        status mustEqual "HTTP/1.1 200 OK"
+        headers("Flerg") mustEqual "Blerg"
+        headers(ContentLength) mustEqual expected.length.toString
+        headers(ContentType) mustEqual "text/plain"
+        parseTime(headers(LastModified)) mustEqual trunc(modified)
+        body.toArray must contain theSameElementsInOrderAs expected
       }
     }
 
     "respects if-modified-since" - {
       "when it is after the modification date" in {
-        verify(unsafeRun(Response.fromPath(path, req.addHeader("If-Modified-Since", currentTimeStr)))) {
-          (status, headers, body) =>
-            status mustEqual "HTTP/1.1 304 Not Modified"
-            // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
-            assert(!headers.get(ContentLength).exists(_ != expected.length.toString))
-            assert(body.isEmpty)
+        verify(
+          unsafeRun(
+            Response.fromPath(
+              path,
+              req.addHeader("If-Modified-Since", currentTimeStr)
+            )
+          )
+        ) { (status, headers, body) =>
+          status mustEqual "HTTP/1.1 304 Not Modified"
+          // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
+          assert(
+            !headers.get(ContentLength).exists(_ != expected.length.toString)
+          )
+          assert(body.isEmpty)
         }
       }
 
       "when it is before the modification date" in {
-        verify(unsafeRun(Response.fromPath(path, req.addHeader("If-Modified-Since", timeStr(modified.minusSeconds(5)))))) {
-          (status, headers, body) =>
-            status mustEqual "HTTP/1.1 200 OK"
-            headers(ContentLength) mustEqual expected.length.toString
-            body.toArray must contain theSameElementsInOrderAs expected
+        verify(
+          unsafeRun(
+            Response.fromPath(
+              path,
+              req.addHeader(
+                "If-Modified-Since",
+                timeStr(modified.minusSeconds(5))
+              )
+            )
+          )
+        ) { (status, headers, body) =>
+          status mustEqual "HTTP/1.1 200 OK"
+          headers(ContentLength) mustEqual expected.length.toString
+          body.toArray must contain theSameElementsInOrderAs expected
         }
       }
     }
@@ -108,38 +151,68 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
     val path = Paths.get(getClass.getClassLoader.getResource(resource).toURI)
     val modified = Files.getLastModifiedTime(path).toInstant
     val expected = Files.readAllBytes(path)
-    val req = Request.NoBody(Request.Method.GET, new URI("/path-test.txt"), Version.Http11, Headers.empty)
+    val req = Request.NoBody(
+      Request.Method.GET,
+      new URI("/path-test.txt"),
+      Version.Http11,
+      Headers.empty
+    )
 
     "when resource is un-jarred" - {
       "writes to connection" in {
-        verify(unsafeRun(Response.fromResource(resource, req, contentType = "text/plain", headers = List("Flerg" -> "Blerg")))) {
-          (status, headers, body) =>
-            status mustEqual "HTTP/1.1 200 OK"
-            headers("Flerg") mustEqual "Blerg"
-            headers(ContentLength) mustEqual expected.length.toString
-            headers(ContentType) mustEqual "text/plain"
-            parseTime(headers(LastModified)) mustEqual trunc(modified)
-            body.toArray must contain theSameElementsInOrderAs expected
+        verify(
+          unsafeRun(
+            Response.fromResource(
+              resource,
+              req,
+              contentType = "text/plain",
+              headers = List("Flerg" -> "Blerg")
+            )
+          )
+        ) { (status, headers, body) =>
+          status mustEqual "HTTP/1.1 200 OK"
+          headers("Flerg") mustEqual "Blerg"
+          headers(ContentLength) mustEqual expected.length.toString
+          headers(ContentType) mustEqual "text/plain"
+          parseTime(headers(LastModified)) mustEqual trunc(modified)
+          body.toArray must contain theSameElementsInOrderAs expected
         }
       }
 
       "respects if-modified-since" - {
         "when it is after the modification date" in {
-          verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", currentTimeStr)))) {
-            (status, headers, body) =>
-              status mustEqual "HTTP/1.1 304 Not Modified"
-              // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
-              assert(!headers.get(ContentLength).exists(_ != expected.length.toString))
-              assert(body.isEmpty)
+          verify(
+            unsafeRun(
+              Response.fromResource(
+                resource,
+                req.addHeader("If-Modified-Since", currentTimeStr)
+              )
+            )
+          ) { (status, headers, body) =>
+            status mustEqual "HTTP/1.1 304 Not Modified"
+            // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
+            assert(
+              !headers.get(ContentLength).exists(_ != expected.length.toString)
+            )
+            assert(body.isEmpty)
           }
         }
 
         "when it is before the modification date" in {
-          verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", timeStr(modified.minusSeconds(5)))))) {
-            (status, headers, body) =>
-              status mustEqual "HTTP/1.1 200 OK"
-              headers(ContentLength) mustEqual expected.length.toString
-              body.toArray must contain theSameElementsInOrderAs expected
+          verify(
+            unsafeRun(
+              Response.fromResource(
+                resource,
+                req.addHeader(
+                  "If-Modified-Since",
+                  timeStr(modified.minusSeconds(5))
+                )
+              )
+            )
+          ) { (status, headers, body) =>
+            status mustEqual "HTTP/1.1 200 OK"
+            headers(ContentLength) mustEqual expected.length.toString
+            body.toArray must contain theSameElementsInOrderAs expected
           }
         }
       }
@@ -162,34 +235,65 @@ class ResponseSpec extends AnyFreeSpec with Matchers {
       val cl = new URLClassLoader(Array(jarFile.toUri.toURL), null)
 
       "writes to connection" in {
-        verify(unsafeRun(Response.fromResource(resource, req, classLoader = cl, contentType = "text/plain", headers = List("Flerg" -> "Blerg")))) {
-          (status, headers, body) =>
-            status mustEqual "HTTP/1.1 200 OK"
-            headers("Flerg") mustEqual "Blerg"
-            headers(ContentLength) mustEqual expected.length.toString
-            headers(ContentType) mustEqual "text/plain"
-            parseTime(headers(LastModified)) mustEqual trunc(jarModified)
-            body.toArray must contain theSameElementsInOrderAs expected
+        verify(
+          unsafeRun(
+            Response.fromResource(
+              resource,
+              req,
+              classLoader = cl,
+              contentType = "text/plain",
+              headers = List("Flerg" -> "Blerg")
+            )
+          )
+        ) { (status, headers, body) =>
+          status mustEqual "HTTP/1.1 200 OK"
+          headers("Flerg") mustEqual "Blerg"
+          headers(ContentLength) mustEqual expected.length.toString
+          headers(ContentType) mustEqual "text/plain"
+          parseTime(headers(LastModified)) mustEqual trunc(jarModified)
+          body.toArray must contain theSameElementsInOrderAs expected
         }
       }
 
       "respects if-modified-since" - {
         "when it is after the modification date" in {
-          verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", timeStr(jarModified.plusSeconds(5))), classLoader = cl))) {
-            (status, headers, body) =>
-              status mustEqual "HTTP/1.1 304 Not Modified"
-              // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
-              assert(!headers.get(ContentLength).exists(_ != expected.length.toString))
-              assert(body.isEmpty)
+          verify(
+            unsafeRun(
+              Response.fromResource(
+                resource,
+                req.addHeader(
+                  "If-Modified-Since",
+                  timeStr(jarModified.plusSeconds(5))
+                ),
+                classLoader = cl
+              )
+            )
+          ) { (status, headers, body) =>
+            status mustEqual "HTTP/1.1 304 Not Modified"
+            // 304 MAY send content-length, but if it does it must equal the length of the omitted body (not zero)
+            assert(
+              !headers.get(ContentLength).exists(_ != expected.length.toString)
+            )
+            assert(body.isEmpty)
           }
         }
 
         "when it is before the modification date" in {
-          verify(unsafeRun(Response.fromResource(resource, req.addHeader("If-Modified-Since", timeStr(jarModified.minusSeconds(5))), classLoader = cl))) {
-            (status, headers, body) =>
-              status mustEqual "HTTP/1.1 200 OK"
-              headers(ContentLength) mustEqual expected.length.toString
-              body.toArray must contain theSameElementsInOrderAs expected
+          verify(
+            unsafeRun(
+              Response.fromResource(
+                resource,
+                req.addHeader(
+                  "If-Modified-Since",
+                  timeStr(jarModified.minusSeconds(5))
+                ),
+                classLoader = cl
+              )
+            )
+          ) { (status, headers, body) =>
+            status mustEqual "HTTP/1.1 200 OK"
+            headers(ContentLength) mustEqual expected.length.toString
+            body.toArray must contain theSameElementsInOrderAs expected
           }
         }
       }

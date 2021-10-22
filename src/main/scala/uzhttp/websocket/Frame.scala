@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets
 
 import zio._
 import zio.stream._
+
 import Frame.frameBytes
 
 import scala.annotation.tailrec

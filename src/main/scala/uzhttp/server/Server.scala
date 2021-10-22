@@ -222,14 +222,14 @@ object Server {
       * ZManaged, the server will be shut down (you can use ZManaged.useForever
       * to keep the server running until termination of your app)
       */
-    def serve: ZManaged[R with Has[Clock], Throwable, Server] = ???
-    // ZManaged.environment[R].flatMap { R =>
-    //   build
-    //     .tap(_.serve().forkManaged)
-    //     .provideSomeLayer[R with Has[Clock]](
-    //       ZLayer.succeed(logger.provide(R))
-    //     )
-    // }
+    def serve: ZManaged[R with Has[Clock], Throwable, Server] =
+      ZManaged.environment[R].flatMap { R =>
+        build
+          .tap(_.serve().forkManaged)
+          .provideSomeLayer[R with Has[Clock]](
+            ZLayer.succeed(logger.provide(R))
+          )
+      }
 
   }
 
