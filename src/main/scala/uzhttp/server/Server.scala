@@ -226,8 +226,8 @@ object Server {
       ZManaged.environment[R].flatMap { R =>
         build
           .tap(_.serve().forkManaged)
-          .provideSomeLayer[R with Has[Clock]](
-            ZLayer.succeed(logger.provide(R))
+          .provideSomeServices[R with Has[Clock]](
+            ZServiceBuilder.succeed(logger.provide(R))
           )
       }
 

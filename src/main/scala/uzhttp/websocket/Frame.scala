@@ -142,26 +142,37 @@ object Frame {
       }
     }
 
-    val parseFrames: ZTransducer[Any, FrameError, Byte, Frame] =
-      ZTransducer.apply[Any, FrameError, Byte, Frame] {
+    def channel: ZChannel[Any, Throwable, Chunk[Byte], Any, FrameError, Chunk[
+      Frame
+    ], Any] = {
+      ZChannel.unwrapManaged[Any, Throwable, Chunk[
+        Byte
+      ], Any, FrameError, Chunk[Frame], Any](
         ZManaged.succeed(new State()).map { state =>
-          {
-            case None =>
-              updateState(state)
-              if (state.parsingState == LengthTooLong)
-                ZIO.fail(FrameTooLong(state.buf.getLong(2)))
-              else
-                ZIO.succeed(state.emitAndReset())
-            case Some(chunk) =>
-              state.remainder = state.remainder ++ chunk
-              updateState(state)
-              if (state.parsingState == LengthTooLong)
-                ZIO.fail(FrameTooLong(state.buf.getLong(2)))
-              else
-                ZIO.succeed(state.emit())
-          }
+          ZChannel
+            .readWithCause[Any, Throwable, Chunk[Byte], Any, FrameError, Chunk[
+              Frame
+            ], Any](
+              in = bytes => {
+                state.remainder = state.remainder ++ bytes
+                updateState(state)
+                if (state.parsingState == LengthTooLong)
+                  ZChannel.fail(FrameTooLong(state.buf.getLong(2)))
+                else
+                  ZChannel.succeed(state.emit())
+              },
+              halt = err => ZChannel.fail(StreamHalted(err)),
+              done = _ => {
+                updateState(state)
+                if (state.parsingState == LengthTooLong)
+                  ZChannel.fail(FrameTooLong(state.buf.getLong(2)))
+                else
+                  ZChannel.succeed(state.emitAndReset())
+              }
+            )
         }
-      }
+      )
+    }
   }
 
   // mask the given bytes with the given key, mutating the input array
@@ -189,13 +200,22 @@ object Frame {
 
   // Parses websocket frames from the bytestream using the parseFrame transducer
   private[uzhttp] def parse(
-      stream: Stream[Throwable, Byte]
-  ): Stream[Throwable, Frame] = stream.aggregate(FastParsing.parseFrames)
+      stream: ZStream[Any, Throwable, Byte]
+  ): ZStream[Any, Throwable, Frame] = {
+    val channel: ZChannel[Any, Throwable, Chunk[Byte], Any, FrameError, Chunk[
+      Frame
+    ], Any] = FastParsing.channel
+
+    stream.pipeThroughChannel(channel)
+  }
 
   sealed abstract class FrameError(msg: String) extends Throwable(msg)
   // We don't handle frames that are over 2GB, because Java can't handle their length.
   final case class FrameTooLong(length: Long)
       extends FrameError(s"Frame length $length exceeds Int.MaxValue")
+
+  final case class StreamHalted(cause: Cause[Throwable])
+      extends FrameError(cause.prettyPrint)
 
   private[websocket] def frameSize(payloadLength: Int) =
     if (payloadLength < 126)
