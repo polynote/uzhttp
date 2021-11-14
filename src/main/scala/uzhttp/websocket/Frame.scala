@@ -69,12 +69,6 @@ object Frame {
         this.parsedFrames = Chunk.empty
         result
       }
-
-      def emitAndReset(): Chunk[Frame] = {
-        this.reset()
-        this.remainder = Chunk.empty
-        this.emit()
-      }
     }
 
     @tailrec def updateState(state: State): Unit = {
@@ -152,22 +146,24 @@ object Frame {
           ZChannel
             .readWithCause[Any, Throwable, Chunk[Byte], Any, FrameError, Chunk[
               Frame
-            ], Any](
+            ], Unit](
               in = bytes => {
                 state.remainder = state.remainder ++ bytes
                 updateState(state)
                 if (state.parsingState == LengthTooLong)
                   ZChannel.fail(FrameTooLong(state.buf.getLong(2)))
                 else
-                  ZChannel.succeed(state.emit())
+                  ZChannel.write(state.emit())
               },
-              halt = err => ZChannel.fail(StreamHalted(err)),
+              halt = err => {
+                ZChannel.fail(StreamHalted(err))
+              },
               done = _ => {
                 updateState(state)
                 if (state.parsingState == LengthTooLong)
                   ZChannel.fail(FrameTooLong(state.buf.getLong(2)))
                 else
-                  ZChannel.succeed(state.emitAndReset())
+                  ZChannel.succeed(())
               }
             )
         }
@@ -201,13 +197,9 @@ object Frame {
   // Parses websocket frames from the bytestream using the parseFrame transducer
   private[uzhttp] def parse(
       stream: ZStream[Any, Throwable, Byte]
-  ): ZStream[Any, Throwable, Frame] = {
-    val channel: ZChannel[Any, Throwable, Chunk[Byte], Any, FrameError, Chunk[
-      Frame
-    ], Any] = FastParsing.channel
-
-    stream.pipeThroughChannel(channel)
-  }
+  ): ZStream[Any, Throwable, Frame] =
+    stream
+      .pipeThroughChannel[Any, FrameError, Frame](FastParsing.channel)
 
   sealed abstract class FrameError(msg: String) extends Throwable(msg)
   // We don't handle frames that are over 2GB, because Java can't handle their length.

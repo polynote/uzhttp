@@ -392,6 +392,7 @@ object Response {
     for {
       closed <- Promise.make[Throwable, Unit]
       headers <- handshakeHeaders
+      _ = println("Creating Web socket response")
     } yield WebsocketResponse(output, closed, headers)
   }
 
