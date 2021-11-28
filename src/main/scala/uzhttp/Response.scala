@@ -754,9 +754,9 @@ object Response {
         ZManaged.environment[R].map { env =>
           new PermanentCache(
             shouldMemoize,
-            (req, rep) => cachedResponse(req, rep).provide(env),
+            (req, rep) => cachedResponse(req, rep).provideEnvironment(env),
             cacheKey,
-            requestHandler.andThen(_.provide(env))
+            requestHandler.andThen(_.provideEnvironment(env))
           )
         }
     }

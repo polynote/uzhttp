@@ -110,8 +110,6 @@ object TestServer extends ZIOAppDefault {
           }
           .handleSome(cache)
           .withMaxPending(Short.MaxValue)
-          .withLogger(ServerLogger.Silent)
-          .withLogger(ServerLogger.Debug)
           //.withConnectionIdleTimeout(Duration(5, TimeUnit.SECONDS))
           .serve
           .use { server =>

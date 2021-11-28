@@ -9,6 +9,8 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+import izumi.reflect.macrortti.LightTypeTag
+
 import uzhttp.HTTPError.{BadRequest, NotFound, RequestTimeout}
 
 import zio._
@@ -52,12 +54,12 @@ class Server private (
 
   def awaitShutdown: IO[Throwable, Unit] = closed.await
 
-  private def serve(): RIO[Logging with Has[Clock], Nothing] =
+  private def serve(): RIO[Clock, Nothing] =
     Server.ChannelSelector(channel, requestHandler, errorHandler, config).use {
       selector =>
         uri
           .someOrFail(())
-          .flatMap(uri => Logging.info(s"Server listening on $uri"))
+          .flatMap(uri => ZIO.logInfo(s"Server listening on $uri"))
           .ignore *> selector.run
     }
 
@@ -76,14 +78,13 @@ object Server {
     */
   def builder(address: InetSocketAddress): Builder[Any] = Builder(address)
 
-  final case class Builder[-R] private[Server] (
+  final case class Builder[-R: Tag: IsNotIntersection] private[Server] (
       address: InetSocketAddress,
       config: Config = Config(),
       requestHandler: PartialFunction[Request, ZIO[R, HTTPError, Response]] =
         PartialFunction.empty,
       errorHandler: HTTPError => ZIO[R, Nothing, Response] =
-        defaultErrorFormatter,
-      logger: ServerLogger[R] = ServerLogger.Default
+        defaultErrorFormatter
   ) {
 
     /** Set the address on which the server should listen, replacing the
@@ -117,7 +118,7 @@ object Server {
     /** Provide a total function which will handle all requests not handled by a
       * previously given partial handler given to [[handleSome]].
       */
-    def handleAll[R1 <: R](
+    def handleAll[R1 <: R: Tag: IsNotIntersection](
         handler: Request => ZIO[R1, HTTPError, Response]
     ): Builder[R1] =
       copy(requestHandler = requestHandler orElse { case x => handler(x) })
@@ -125,7 +126,7 @@ object Server {
     /** Provide a partial function which will handle matched requests not
       * already handled by a previously given partial handler.
       */
-    def handleSome[R1 <: R](
+    def handleSome[R1 <: R: Tag: IsNotIntersection](
         handler: PartialFunction[Request, ZIO[R1, HTTPError, Response]]
     ): Builder[R1] =
       copy(requestHandler = requestHandler orElse handler)
@@ -134,66 +135,12 @@ object Server {
       * request into a [[Response]] to be returned to the client. The default
       * error formatter returns a plaintext response indicating the error.
       */
-    def errorResponse[R1 <: R](
+    def errorResponse[R1 <: R: Tag: IsNotIntersection](
         errorHandler: HTTPError => URIO[R1, Response]
     ): Builder[R1] =
       copy(errorHandler = errorHandler)
 
-    /** Provide a complete logger, replacing the current logger. This is useful
-      * if you want to use one of the default loggers: [[ServerLogger.Default]]
-      * (the default), [[ServerLogger.Quiet]] (logs errors only), or
-      * [[ServerLogger.Silent]] (logs nothing)
-      */
-    def withLogger[R1 <: R](logger: ServerLogger[R1]): Builder[R1] =
-      copy(logger = logger)
-
-    /** Replace the current error logger with the given function, which receives
-      * a String and a Throwable and logs it somehow (or does nothing).
-      */
-    def logErrors[R1 <: R](
-        errorLogger: (String, Throwable) => URIO[R1, Unit]
-    ): Builder[R1] =
-      copy(logger = logger.copy(error = errorLogger))
-
-    /** Replace the current info logger with the given function, which receives
-      * a String and logs it somehow (or does nothing)
-      */
-    def logInfo[R1 <: R](
-        infoLogger: (=> String) => URIO[R1, Unit]
-    ): Builder[R1] =
-      copy(logger = logger.copy(info = infoLogger))
-
-    /** Replace the current request logger with the given function, which
-      * receives:
-      *   - The request
-      *   - The response
-      *   - The start duration – how long it took for the request handler to
-      *     return a response
-      *   - The finish duration – the duration between the request handler
-      *     returning the response, and the response being completely sent to
-      *     the client
-      *
-      * and logs it somehow (or does nothing)
-      */
-    def logRequests[R1 <: R](
-        requestLogger: (Request, Response, Duration, Duration) => URIO[R1, Unit]
-    ): Builder[R1] =
-      copy(logger = logger.copy(request = requestLogger))
-
-    /** Replace the current debug logger with the given function, which receives
-      * a String and logs it somehow (or does nothing)
-      */
-    def logDebug[R1 <: R](
-        debugLogger: (=> String) => URIO[R1, Unit]
-    ): Builder[R1] =
-      copy(logger = logger.copy(debug = debugLogger))
-
-    def logDebugErrors[R1 <: R](
-        debugErrorLogger: (String, Throwable) => URIO[R1, Unit]
-    ): Builder[R1] =
-      copy(logger = logger.copy(debugError = debugErrorLogger))
-
-    private def build: ZManaged[R with Logging, Throwable, Server] =
+    private def build: ZManaged[R, Throwable, Server] =
       mkSocket(address, config.maxPending)
         .flatMap { channel =>
           Promise.make[Throwable, Unit].toManaged.flatMap { closed =>
@@ -203,15 +150,17 @@ object Server {
                 ZIO.succeed(
                   new Server(
                     channel,
-                    (requestHandler orElse unhandled) andThen (_.provide(env)),
-                    errorHandler andThen (_.provide(env)),
+                    (requestHandler orElse unhandled) andThen (_.provideEnvironment(
+                      env
+                    )),
+                    errorHandler andThen (_.provideEnvironment(env)),
                     config,
                     closed
                   )
                 )
               }
               .toManagedWith { server =>
-                Logging.info("Shutting down server") *> server.shutdown()
+                ZIO.logInfo("Shutting down server") *> server.shutdown()
               }
           }
         }
@@ -222,14 +171,14 @@ object Server {
       * ZManaged, the server will be shut down (you can use ZManaged.useForever
       * to keep the server running until termination of your app)
       */
-    def serve: ZManaged[R with Has[Clock], Throwable, Server] =
-      ZManaged.environment[R].flatMap { R =>
+    def serve: ZManaged[R with Clock, Throwable, Server] = {
+      val res = ZManaged.environment[R with Clock].flatMap { env =>
         build
           .tap(_.serve().forkManaged)
-          .provideSomeServices[R with Has[Clock]](
-            ZServiceBuilder.succeed(logger.provide(R))
-          )
       }
+
+      res
+    }
 
   }
 
@@ -378,8 +327,7 @@ object Server {
       arr
     }
 
-    private val timeoutRequest
-        : Request => ZIO[Has[Clock], HTTPError, Response] =
+    private val timeoutRequest: Request => ZIO[Clock, HTTPError, Response] =
       responseTimeout match {
         case Duration.Infinity           => requestHandler
         case duration if duration.isZero => requestHandler
@@ -397,7 +345,7 @@ object Server {
         .catchAll(errorHandler)
         .timed
         .tap { case (dur, rep) =>
-          Logging.debug {
+          ZIO.logDebug {
             val size = rep.headers
               .get("Content-Length")
               .map(cl =>
@@ -426,9 +374,8 @@ object Server {
           curRep.set(Some(rep)) *> rep
             .writeTo(this)
             .onTermination { cause =>
-              Logging.debugError(
-                "Error writing response; closing connection",
-                cause.squash
+              ZIO.logError(
+                s"Error writing response; closing connection [${cause}]"
               ) *> close()
             }
             .ensuring {
@@ -439,26 +386,21 @@ object Server {
             }
             .timed
             .flatMap { case (finishDuration, _) =>
-              curReq.set(Left(0 -> Nil)) *> Logging.request(
-                req,
-                rep,
-                startDuration,
-                finishDuration
-              )
+              curReq.set(Left(0 -> Nil))
             }
         }
     }
 
-    val doRead: RIO[Logging with Has[Clock], Unit] =
+    val doRead: RIO[Clock, Unit] =
       readLock.withPermit {
-        def bytesReceived: ZIO[Logging with Has[Clock], HTTPError, Unit] = if (
+        def bytesReceived: ZIO[Clock, HTTPError, Unit] = if (
           inputBuffer.position() > 0
         ) {
           val numBytes = inputBuffer.position()
 
           def readNext(
               state: Either[(Int, List[String]), ContinuingRequest]
-          ): ZIO[Logging with Has[Clock], HTTPError, Unit] =
+          ): ZIO[Clock, HTTPError, Unit] =
             state match {
               case Right(req) =>
                 req.bytesRemaining.flatMap {
@@ -599,14 +541,12 @@ object Server {
           }
           .catchAll {
             case err: ClosedChannelException =>
-              Logging.debugError(
-                s"Client closed connection unexpectedly",
-                err
+              ZIO.logError(
+                s"Client closed connection unexpectedly [${err.getMessage()}]"
               ) *> close()
             case err =>
-              Logging.debugError(
-                s"Closing connection due to read error",
-                err
+              ZIO.logError(
+                s"Closing connection due to read error [${err.getMessage()}]"
               ) *> close()
           }
       }
@@ -621,10 +561,10 @@ object Server {
       case None      => ZIO.unit
     }
 
-    def close(): URIO[Logging, Unit] =
+    def close(): UIO[Unit] =
       shutdown.succeed(()).flatMap {
         case true =>
-          Logging.debug(s"Closing connection") *>
+          ZIO.logDebug(s"Closing connection") *>
             endCurrentRequest *>
             stopIdleTimeout *>
             closeResponse *>
@@ -635,12 +575,12 @@ object Server {
 
     val awaitShutdown: IO[Throwable, Unit] = shutdown.await
 
-    val resetIdleTimeout: URIO[Logging with Has[Clock], Unit] =
+    val resetIdleTimeout: URIO[Clock, Unit] =
       config.connectionIdleTimeout match {
         case Duration.Infinity => ZIO.unit
         case duration =>
           val timeoutClose = ZIO.when(channel.isOpen) {
-            (Logging.debug(
+            (ZIO.logDebug(
               s"Closing connection $this due to idle timeout (${config.connectionIdleTimeout.render})"
             ) *>
               close()).delay(duration)
@@ -681,7 +621,7 @@ object Server {
         requestHandler: Request => IO[HTTPError, Response],
         errorHandler: HTTPError => UIO[Response],
         config: Config
-    ): ZManaged[Logging with Has[Clock], Nothing, Connection] = {
+    ): ZManaged[Clock, Nothing, Connection] = {
       for {
         curReq <- Ref.make[Either[(Int, List[String]), ContinuingRequest]](
           Left(0 -> Nil)
@@ -745,7 +685,7 @@ object Server {
       }
     }
 
-    def select: URIO[Logging with Has[Clock], Unit] =
+    def select: URIO[Clock, Unit] =
       ZIO
         .attemptBlockingCancelable(selector.select(500))(
           ZIO.succeed(selector.wakeup()).unit
@@ -760,9 +700,8 @@ object Server {
                   ZIO
                     .attempt(Option(serverSocket.accept()))
                     .tapError(err =>
-                      Logging.error(
-                        "Error accepting connection; server socket is closed",
-                        err
+                      ZIO.logError(
+                        s"Error accepting connection; server socket is closed [${err.getMessage()}]"
                       ) *>
                         close()
                     )
@@ -782,9 +721,8 @@ object Server {
                     .attempt(key.attachment().asInstanceOf[Server.Connection])
                     .flatMap { conn =>
                       conn.doRead.catchAll { err =>
-                        Logging.debugError(
-                          s"Error reading from connection",
-                          err
+                        ZIO.logError(
+                          s"Error reading from connection ${err.getMessage()}"
                         ) <* conn.close().forkDaemon
                       }
                     }
@@ -792,26 +730,26 @@ object Server {
             }
         }
         .catchAll { err =>
-          Logging.debug(
+          ZIO.logDebug(
             s"Error selecting channels: ${err}\n" + err.getStackTrace
               .mkString("\n\tat ")
           )
         }
         .onInterrupt {
-          Logging.debug("Selector interrupted")
+          ZIO.logDebug("Selector interrupted")
         }
 
-    def close(): URIO[Logging, Unit] =
-      Logging.debug("Stopping selector") *>
+    def close(): UIO[Unit] =
+      ZIO.logDebug("Stopping selector") *>
         ZIO
           .foreach(selector.keys().toIterable)(k => ZIO.attempt(k.cancel()))
           .orDie *>
         ZIO.attempt(selector.close()).orDie *>
         ZIO.attempt(serverSocket.close()).orDie
 
-    def run: RIO[Logging with Has[Clock], Nothing] =
+    def run: RIO[Clock, Nothing] =
       (select *> ZIO.yieldNow).forever.onInterrupt {
-        Logging.debug("Selector loop interrupted")
+        ZIO.logDebug("Selector loop interrupted")
       }
   }
 
@@ -821,7 +759,7 @@ object Server {
         requestHandler: Request => IO[HTTPError, Response],
         errorHandler: HTTPError => UIO[Response],
         config: Config
-    ): ZManaged[Logging, Throwable, ChannelSelector] =
+    ): ZManaged[Any, Throwable, ChannelSelector] =
       ZIO
         .attempt(Selector.open())
         .toManagedWith(s => ZIO.succeed(s.close()))

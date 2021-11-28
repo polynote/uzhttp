@@ -6,27 +6,6 @@ import zio._
 
 package object server {
 
-  type Logging = Has[ServerLogger[Any]]
-
-  object Logging {
-    def info(str: => String): URIO[Logging, Unit] =
-      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].info(str))
-    def request(
-        req: Request,
-        rep: Response,
-        startDuration: Duration,
-        finishDuration: Duration
-    ): URIO[Logging, Unit] = ZIO.accessZIO[Logging](
-      _.get[ServerLogger[Any]].request(req, rep, startDuration, finishDuration)
-    )
-    def debug(str: => String): URIO[Logging, Unit] =
-      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].debug(str))
-    def error(str: String, err: Throwable): URIO[Logging, Unit] =
-      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].error(str, err))
-    def debugError(str: String, err: Throwable): URIO[Logging, Unit] =
-      ZIO.accessZIO[Logging](_.get[ServerLogger[Any]].debugError(str, err))
-  }
-
   private[server] val EmptyLine: Array[Byte] = CRLF ++ CRLF
 
   // The most copy-pasted StackOverflow snippet of all time, adapted to unprincipled Scala!
