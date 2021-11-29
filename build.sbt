@@ -6,7 +6,7 @@ crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.6", "3.0.1")
 ThisBuild / versionScheme := Some("early-semver")
 
 //val zioVersion = "2.0.0-M4+21-503ceef7-SNAPSHOT"
-val zioVersion = "2.0.0-M6-2+18-b1688d0e+20211128-1837-SNAPSHOT"
+val zioVersion = "2.0.0-M6-2+20-67ffbed8+20211129-1114-SNAPSHOT"
 val sttpClientVersion = "3.3.16"
 val scalaTestVersion = "3.2.9"
 
