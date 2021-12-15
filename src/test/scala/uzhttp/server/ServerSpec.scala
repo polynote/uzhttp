@@ -22,12 +22,14 @@ import org.scalatest.compatible.Assertion
 import sttp.client3.asynchttpclient.AsyncHttpClientBackend
 import sttp.client3.asynchttpclient.future.AsyncHttpClientFutureBackend
 import scala.concurrent.Future
+import scala.concurrent.ExecutionContext
 
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
 
   private val runningServerRef: Ref[Option[Server]] = unsafeRun(Ref.make(None))
-  private implicit val ec = scala.concurrent.ExecutionContext.global
+  private implicit val ec: ExecutionContext =
+    scala.concurrent.ExecutionContext.global
 
   private val backend = AsyncHttpClientFutureBackend.usingConfig(
     new DefaultAsyncHttpClientConfig.Builder()

@@ -2,7 +2,7 @@ organization := "org.polynote"
 name := "uzhttp"
 version := "0.3.0-RC1"
 scalaVersion := "2.13.6"
-crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.6", "3.0.1")
+crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.7", "3.1.0")
 ThisBuild / versionScheme := Some("early-semver")
 
 //val zioVersion = "2.0.0-M4+21-503ceef7-SNAPSHOT"
@@ -25,7 +25,7 @@ libraryDependencies := Seq(
 testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
 
 scalacOptions ++= {
-  if (scalaVersion.value != "3.0.1")
+  if (scalaVersion.value != "3.1.0")
     Seq("-deprecation", "-feature", "-Ywarn-value-discard", "-Xfatal-warnings")
   else
     Seq("-deprecation", "-feature", "-Xfatal-warnings")
