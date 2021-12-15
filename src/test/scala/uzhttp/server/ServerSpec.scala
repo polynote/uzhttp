@@ -3,9 +3,8 @@ package uzhttp.server
 import java.net.InetSocketAddress
 import java.security.MessageDigest
 
-import zio.{Chunk, Queue, Ref, Task, ZIO}
-import zio.stream.{Sink, Stream, ZStream}
-import ZStream.Take
+import zio._
+import zio.stream._
 import org.asynchttpclient.DefaultAsyncHttpClientConfig
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.freespec.AnyFreeSpec
@@ -14,28 +13,29 @@ import uzhttp.{HTTPError, Request, Response, websocket}
 import websocket.Binary
 import sttp.client3.SttpBackend
 import sttp.client3._
-import sttp.client3.asynchttpclient.zio.AsyncHttpClientZioBackend
 import sttp.client3.internal.ws.WebSocketEvent
 import sttp.capabilities.WebSockets
-import sttp.client3.impl.zio.ZioWebSockets
 import sttp.monad.syntax.MonadErrorOps
 import sttp.ws.WebSocketFrame
-import sttp.client3.asynchttpclient.zio._
 import sttp.ws.WebSocket
-import sttp.capabilities.zio.ZioStreams
 import org.scalatest.compatible.Assertion
+import sttp.client3.asynchttpclient.AsyncHttpClientBackend
+import sttp.client3.asynchttpclient.future.AsyncHttpClientFutureBackend
+import scala.concurrent.Future
+import scala.concurrent.ExecutionContext
 
 class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
   import TestRuntime.runtime.unsafeRun
-  private val runningServerRef: Ref[Option[Server]] = unsafeRun(Ref.make(None))
 
-  private val backend: SttpBackend[Task, WebSockets] = unsafeRun(
-    AsyncHttpClientZioBackend.usingConfig(
-      new DefaultAsyncHttpClientConfig.Builder()
-        .setWebSocketMaxFrameSize(Int.MaxValue)
-        .setWebSocketMaxBufferSize(8192)
-        .build()
-    )
+  private val runningServerRef: Ref[Option[Server]] = unsafeRun(Ref.make(None))
+  private implicit val ec: ExecutionContext =
+    scala.concurrent.ExecutionContext.global
+
+  private val backend = AsyncHttpClientFutureBackend.usingConfig(
+    new DefaultAsyncHttpClientConfig.Builder()
+      .setWebSocketMaxFrameSize(Int.MaxValue)
+      .setWebSocketMaxBufferSize(8192)
+      .build()
   )
 
   private val serverTask = unsafeRun {
@@ -95,7 +95,7 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
       .serve
 
     managed
-      .tapM(server => runningServerRef.set(Some(server)))
+      .tapZIO(server => runningServerRef.set(Some(server)))
       .useForever
       .forkDaemon
   }
@@ -114,74 +114,58 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
 
     "Handles basic requests" - {
       "GET" in {
-        unsafeRun {
-          basicRequest
-            .get(uri"http://localhost:$port/basicReq")
-            .send(backend)
-            .flatMap { rep =>
-              ZIO.effect {
-                rep.code.code mustEqual 200
-                val headers =
-                  rep.headers.map(h => h.name.toLowerCase -> h.value).toMap
-                headers("x-echoed-request-uri") mustEqual "/basicReq"
-                headers("x-echoed-method") mustEqual "GET"
-              }
-            }
-        }
+        basicRequest
+          .get(uri"http://localhost:$port/basicReq")
+          .send(backend)
+          .map { rep =>
+            rep.code.code mustEqual 200
+            val headers =
+              rep.headers.map(h => h.name.toLowerCase -> h.value).toMap
+            headers("x-echoed-request-uri") mustEqual "/basicReq"
+            headers("x-echoed-method") mustEqual "GET"
+          }
       }
 
       "POST" - {
         "small body" in {
           val body = Array.tabulate(256)(_.toByte)
-          unsafeRun {
-            basicRequest
-              .post(uri"http://localhost:$port/basicReq")
-              .body(body)
-              .response(asByteArrayAlways)
-              .send(backend)
-              .flatMap { rep =>
-                ZIO.effect {
-                  rep.code.code mustEqual 200
-                  rep.body must contain theSameElementsInOrderAs body
-                }
-              }
-          }
+          basicRequest
+            .post(uri"http://localhost:$port/basicReq")
+            .body(body)
+            .response(asByteArrayAlways)
+            .send(backend)
+            .map { rep =>
+              rep.code.code mustEqual 200
+              rep.body must contain theSameElementsInOrderAs body
+            }
         }
 
         "large body" in {
           val body = Array.tabulate(Short.MaxValue)(_.toByte)
-          unsafeRun {
-            basicRequest
-              .post(uri"http://localhost:$port/basicReq")
-              .body(body)
-              .response(asByteArrayAlways)
-              .send(backend)
-              .flatMap { rep =>
-                ZIO.effect {
-                  rep.code.code mustEqual 200
-                  rep.body must contain theSameElementsInOrderAs body
-                }
-              }
-          }
+          basicRequest
+            .post(uri"http://localhost:$port/basicReq")
+            .body(body)
+            .response(asByteArrayAlways)
+            .send(backend)
+            .map { rep =>
+              rep.code.code mustEqual 200
+              rep.body must contain theSameElementsInOrderAs body
+            }
         }
       }
     }
 
     "Decodes URI" in {
-      unsafeRun {
-        basicRequest
-          .get(uri"http://localhost:$port/basic%20request")
-          .send(backend)
-          .flatMap { rep =>
-            ZIO.effect {
-              rep.code.code mustEqual 200
-              val headers =
-                rep.headers.map(h => h.name.toLowerCase -> h.value).toMap
-              headers("x-echoed-request-uri") mustEqual "/basic request"
-              headers("x-echoed-method") mustEqual "GET"
-            }
-          }
-      }
+      basicRequest
+        .get(uri"http://localhost:$port/basic%20request")
+        .send(backend)
+        .map { rep =>
+          rep.code.code mustEqual 200
+          val headers =
+            rep.headers.map(h => h.name.toLowerCase -> h.value).toMap
+          headers("x-echoed-request-uri") mustEqual "/basic request"
+          headers("x-echoed-method") mustEqual "GET"
+        }
     }
 
     "handles websocket request" in {
@@ -206,51 +190,41 @@ class ServerSpec extends AnyFreeSpec with Matchers with BeforeAndAfterAll {
           new Exception(s"Websocket closed early ${e.getMessage}")
         )
 
-      unsafeRun {
-        sendR(
-          basicRequest
-            .get(uri"ws://localhost:$port/websocketTest")
-            .response(
-              asWebSocketAlways[Task, Assertion](ws =>
-                for {
-                  _ <- ws.send(WebSocketFrame.binary(smallBinaryData))
-                  small1 <- errOnClose(ws.receiveBinary(true))
-                  small2 <- errOnClose(ws.receiveBinary(true))
-                  _ <- ws.send(WebSocketFrame.binary(binaryData))
-                  mid1 <- errOnClose(ws.receiveBinary(true))
-                  mid2 <- errOnClose(ws.receiveBinary(true))
-                  _ <- ws.send(WebSocketFrame.binary(bigBinaryData))
-                  big1 <- errOnClose(ws.receiveBinary(true))
-                  big2 <- errOnClose(ws.receiveBinary(true))
-                  _ <- ws.send(WebSocketFrame.binary(hugeBinaryData))
-                  huge1 <- errOnClose(ws.receiveBinary(true))
-                  huge2 <- errOnClose(ws.receiveBinary(true))
-                  _ <- ws.send(WebSocketFrame.text(strData))
-                  string1 <- errOnClose(ws.receiveText(true))
-                  string2 <- errOnClose(ws.receiveText(true))
-                  _ <- ws.send(WebSocketFrame.close)
-                } yield {
-                  small1 must contain theSameElementsInOrderAs smallBinaryData
-                  small2 must contain theSameElementsInOrderAs smallBinaryData
-                  mid1 must contain theSameElementsInOrderAs binaryData
-                  mid2 must contain theSameElementsInOrderAs binaryData
-                  big1 must contain theSameElementsInOrderAs bigBinaryData
-                  big2 must contain theSameElementsInOrderAs bigBinaryData
-                  huge1 must contain theSameElementsInOrderAs hugeBinaryData
-                  huge2 must contain theSameElementsInOrderAs hugeBinaryData
-                  string1 mustEqual strData
-                  string2 mustEqual strData
-                }
-              )
-            )
-        ).provideLayer(
-          AsyncHttpClientZioBackend.layerUsingConfigBuilder(builder =>
-            builder
-              .setWebSocketMaxFrameSize(Int.MaxValue)
-              .setWebSocketMaxBufferSize(8192)
-          ) +!+ zio.ZEnv.live
+      basicRequest
+        .get(uri"ws://localhost:$port/websocketTest")
+        .response(
+          asWebSocketAlways[Task, Assertion](ws =>
+            for {
+              _ <- ws.send(WebSocketFrame.binary(smallBinaryData))
+              small1 <- errOnClose(ws.receiveBinary(true))
+              small2 <- errOnClose(ws.receiveBinary(true))
+              _ <- ws.send(WebSocketFrame.binary(binaryData))
+              mid1 <- errOnClose(ws.receiveBinary(true))
+              mid2 <- errOnClose(ws.receiveBinary(true))
+              _ <- ws.send(WebSocketFrame.binary(bigBinaryData))
+              big1 <- errOnClose(ws.receiveBinary(true))
+              big2 <- errOnClose(ws.receiveBinary(true))
+              _ <- ws.send(WebSocketFrame.binary(hugeBinaryData))
+              huge1 <- errOnClose(ws.receiveBinary(true))
+              huge2 <- errOnClose(ws.receiveBinary(true))
+              _ <- ws.send(WebSocketFrame.text(strData))
+              string1 <- errOnClose(ws.receiveText(true))
+              string2 <- errOnClose(ws.receiveText(true))
+              _ <- ws.send(WebSocketFrame.close)
+            } yield {
+              small1 must contain theSameElementsInOrderAs smallBinaryData
+              small2 must contain theSameElementsInOrderAs smallBinaryData
+              mid1 must contain theSameElementsInOrderAs binaryData
+              mid2 must contain theSameElementsInOrderAs binaryData
+              big1 must contain theSameElementsInOrderAs bigBinaryData
+              big2 must contain theSameElementsInOrderAs bigBinaryData
+              huge1 must contain theSameElementsInOrderAs hugeBinaryData
+              huge2 must contain theSameElementsInOrderAs hugeBinaryData
+              string1 mustEqual strData
+              string2 mustEqual strData
+            }
+          )
         )
-      }
     }
   }
 
