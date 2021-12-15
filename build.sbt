@@ -1,6 +1,6 @@
 organization := "org.polynote"
 name := "uzhttp"
-version := "0.2.9"
+version := "0.3.0-RC1"
 scalaVersion := "2.13.6"
 crossScalaVersions := Seq("2.11.12", "2.12.12", "2.13.6", "3.0.1")
 ThisBuild / versionScheme := Some("early-semver")
