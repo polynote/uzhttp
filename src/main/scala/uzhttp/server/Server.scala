@@ -377,11 +377,11 @@ object Server {
             }
             .ensuring {
               close().when(rep.closeAfter)
-            }
+            }.as(rep)
             .timed
-            .flatMap { case (finishDuration, _) =>
+            .flatMap { case (finishDuration, rep) =>
               curReq.set(Left(0 -> Nil)) <*
-                ZIO.logInfo(s"Handled Request <${req.method}> to uri <${req.uri}> in <${(startDuration + finishDuration).toMillis}>ms")
+                ZIO.logInfo(s"Handled Request <${req.method}> to uri <${req.uri}> in <${(startDuration + finishDuration).toMillis}>ms, status <${rep.status}>")
             }
         }
     }
