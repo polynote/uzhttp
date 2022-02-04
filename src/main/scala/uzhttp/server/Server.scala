@@ -6,10 +6,7 @@ import java.net.{InetSocketAddress, SocketAddress, URI}
 import java.nio.ByteBuffer
 import java.nio.channels._
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
-
-import izumi.reflect.macrortti.LightTypeTag
 
 import uzhttp.HTTPError.{BadRequest, NotFound, RequestTimeout}
 
@@ -379,14 +376,15 @@ object Server {
               ) *> close()
             }
             .ensuring {
-              if (rep.closeAfter)
-                close()
-              else
-                ZIO.unit
+              close().when(rep.closeAfter)
             }
+            .as(rep)
             .timed
-            .flatMap { case (finishDuration, _) =>
-              curReq.set(Left(0 -> Nil))
+            .flatMap { case (finishDuration, rep) =>
+              curReq.set(Left(0 -> Nil)) <*
+                ZIO.logInfo(
+                  s"Handled Request <${req.method}> to uri <${req.uri}> in <${(startDuration + finishDuration).toMillis}>ms, status <${rep.status}>"
+                )
             }
         }
     }
